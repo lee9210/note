@@ -1,0 +1,43 @@
+#Bootstrap JDK installation path.You must set up
+export ALT_BOOTDIR=/Library/Java/JavaVirtualMachines/jdk1.7.0_04.jdk/Contents/Home
+
+#Allows automatic download dependency
+export ALLOW_DOWNLOADS=true
+
+#The number of threads that are compiled in parallel can be set to the number of CPU cores
+export HOTSPOT_BUILD_JOBS=6
+export ALT_PARALLEL_COMPILE_JOBS=6
+
+#Compare the differences between the build and previous versions.It makes no sense to us
+#It must be set to false, otherwise the sanity check will report an error indicating that the previous version of the JDK was missing
+#If you have set dev or DEV_ONLU = true, this is not explicitly set
+export USE_PRECOMPILED_HEADER=true
+
+#Content to compile
+export BUILD_LANGTOOLS=true
+#export BUILD_JAXP=false
+#export BUILD_JAXWS=false
+#export BUILD_CORBA=false
+export BUILD_HOTSPOT=true
+export BUILD_JDK=true
+
+#To compile the version
+#export SKIP_DEBUG_BUILD=false
+#export SKIP_FASTDEBUG_BUILD=true
+#export DEBUG_NAME=debug
+
+#Setting it to false can avoid the build of the section between javaws and the browser Java plug-in
+BUILD_DEPLOY=false
+
+#Setting it to false will not build the installation package.Because there are some strange dependencies in the installation package,
+#But even if you don't build it you can already get the full JDK image, so don't build it
+BUILD_INSTALL=FALSE
+
+#The path to which the results are stored
+export ALT_OUTPUTDIR=/Users/IcyFenix/Develop/JVM/jdkBuild/openjdk_7u4/build
+
+#These two environmental variables must be removed, or there will be weird things happening
+unset JAVA_HOME
+unset CLASSPATH
+
+make 2>&1 | tee $ALT_OUTPUTDIR/build.log

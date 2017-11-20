@@ -1,0 +1,13 @@
+Java多线程编程总结:http://lavasoft.blog.51cto.com/62575/27069
+Quartz 2 定时任务（二）：多线程并发执行与数据共享:https://segmentfault.com/a/1190000009128328
+Quartz 在 Spring 中如何动态配置时间:http://sundoctor.iteye.com/blog/399980
+学会4种备份MySQL数据库（基本备份方面没问题了）:http://www.cnblogs.com/SQL888/P/5751631.HTML
+MySQL数据备份之mysqldump使用:http://www.cnblogs.com/feichexia/p/MysqlDataBackup.html
+java-my-life的博客：http://www.cnblogs.com/java-my-life
+成为Java顶尖程序员 ，看这11本书就够了：http://developer.51cto.com/art/201512/503095.htm
+JAVA程序员必看的15本书-JAVA自学书籍推荐：http://blog.csdn.net/yuxin6866/article/details/52225348
+cron表达式：http://www.cronmaker.com/
+Mybatis Generator最完整配置详解：http://www.jianshu.com/p/e09d2370b796
+Dom4j解析和生成XML文档：http://blog.csdn.net/chenghui0317/article/details/11486271
+分布式双活数据中心部署模式：http://blog.csdn.net/xuyaoqiaoyaoge/article/details/48664441
+MySQL索引背后的数据结构及算法原理：http://blog.jobbole.com/24006/
