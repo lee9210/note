@@ -35,4 +35,63 @@ UDP：
 向应用程序提供了一种发送封装的原始ip数据报的方法、并且发送时候无需建立连接。是一种不可靠的连接
 ### IP地址 ###
 ### socket通信 ###
-2
+- 两个java应用程序可以通过一个双向的网络通信连接实现数据交换，这个双向链路的一端称为一个socket。
+- socket通常用来实现client-server连接。
+- java.net包中定义的两个类socket和serversocket，分别用来实现双向连接的client和server端
+- 建立连接时所需的地址信息为远程计算机的ip地址和端口号（port number）
+	- TCP和UDP端口是分开的，每一个有65536个端口
+
+服务器端：
+````
+package com.socket;
+
+import java.io.*;
+import java.net.ServerSocket;
+import java.net.Socket;
+
+public class TestServer {
+    public static void main(String[] args) throws Exception{
+        ServerSocket serverSocket = new ServerSocket(6666);//开放端口，等待连接
+        while (true){
+            Socket socket = serverSocket.accept();//接收客户端连接信息。accept（）是阻塞式的
+            InputStream inputStream = socket.getInputStream();
+            DataInputStream dataInputStream = new DataInputStream(inputStream);
+            String data = dataInputStream.readUTF();//readUTF()阻塞式
+            System.out.println(data);
+            System.out.println("a client accept！");
+            OutputStream outputStream = socket.getOutputStream();
+            DataOutputStream dataOutputStream = new DataOutputStream(outputStream);
+            dataOutputStream.writeUTF("hello client");
+            dataOutputStream.flush();
+        }
+    }
+}
+
+````
+客户端：
+````
+package com.socket;
+
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.Socket;
+
+public class TestClient {
+    public static void main(String[] args) throws Exception{
+        Socket socket = new Socket("127.0.0.1",6666);//申请和服务器连接
+        OutputStream outputStream = socket.getOutputStream();//输出管道
+        DataOutputStream dataOutputStream = new DataOutputStream(outputStream);
+        dataOutputStream.writeUTF("hello server");
+        InputStream inputStream = socket.getInputStream();
+        DataInputStream dataInputStream = new DataInputStream(inputStream);
+        String input = dataInputStream.readUTF();
+        System.out.println(input);
+        dataOutputStream.flush();
+        dataOutputStream.close();
+        socket.close();
+    }
+}
+
+````

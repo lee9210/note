@@ -11,3 +11,4 @@ Mybatis Generator最完整配置详解：http://www.jianshu.com/p/e09d2370b796
 Dom4j解析和生成XML文档：http://blog.csdn.net/chenghui0317/article/details/11486271
 分布式双活数据中心部署模式：http://blog.csdn.net/xuyaoqiaoyaoge/article/details/48664441
 MySQL索引背后的数据结构及算法原理：http://blog.jobbole.com/24006/
+泛型：http://blog.csdn.net/s10461/article/details/53941091
