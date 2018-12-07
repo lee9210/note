@@ -1,0 +1,8 @@
+config入口函数：ServiceBean.setApplicationContext
+
+暴露service服务的流程主要在ServerBean内完成
+
+
+dubbo加载配置文件流程。
+1. 先通过spring提供的ClassPathXmlApplicationContext解析dubbo配置文件
+2. 通过ApplicationContextAware传播解析的结果，调用ServiceBean的setApplicationContext把dubbo
