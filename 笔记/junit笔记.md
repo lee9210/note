@@ -1,24 +1,78 @@
 # junit断言调试函数 #
 
-#### assertEquals断言 ####
+#### 断言：assertXXX方法 ####
+assertArrayEquals("message",A,B):断言A数组和B数组相等
+assertEquals("message",A,B):断言A对象和B对象相等，这个断言在比较两个对象时调用了equals()方法
+assertSame("message",A,B):断言A对象与B对象相同。assert方法是检查A与B是否有相同的值（使用equals方法），而assertSame方法则是检查A与B就是同一个对象(使用的是==操作符)。
+assertTure("message",A):断言A条件为真。
+assertNotNull("message",A):断言A对象不为null。
 
-它的作用是比较实际的值和用户预期的值是否一样
+## 运行参数化测试 ##
+Parameterized(参数化)的测试运行器运行使用不同的参数多次运行同一个测试。
+例如：
+````
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
-#### assertTrue与assertFalse断言 ####
+import java.util.Arrays;
+import java.util.Collection;
 
-assertTrue与assertFalse可以判断某个条件是真还是假，如果和预期的值相同则测试成功，否则将失败
+import static org.junit.Assert.assertEquals;
 
-#### assertNull与assertNotNull断言 ####
+@RunWith(value = Parameterized.class)											//------1
+public class ParameterizedTest {
+    private double expected;													//------2
+    private double valueOne;													//------2
+    private double valueTwo;													//------2
 
-assertNull与assertNotNull可以验证所测试的对象是否为空或不为空，如果和预期的相同则测试成功，否则测试失败
+    @Parameterized.Parameters													//------3
+    public static Collection<Integer[]> getTestParameters(){					//------4
+        return Arrays.asList(new Integer[][] {
+                {2,1,1},
+                {3,2,1},
+                {4,3,1}
+        });
+    }
+    
+    public ParameterizedTest(double expected,double valueOne,double valueTwo){
+        this.expected = expected;
+        this.valueOne = valueOne;
+        this.valueTwo = valueTwo;
+    }
 
-#### assertSame与assertNotSame断言 ####
+    @Test
+    public void sum(){															//------5
+        Calculator calculator = new Calculator();								//------6
+        assertEquals(expected,calculator.add(valueOne,valueTwo),0);				//------7
+    }
 
-assertSame和assertEquals不同，assertSame测试预期的值和实际的值是否为同一个参数(即判断是否为相同的引用)。assertNotSame则测试预期的值和实际的值是不为同一个参数。而assertEquals则判断两个值是否相等，通过对象的equals方法比较，可以相同引用的对象，也可以不同。
+}
+````
+要使用Parameterized的测试运行器来运行一个测试类，就要满足以下要求。按照上注释
+1. 测试类必须使用@RunWith注释，并且要将Parameterized类作为它的参数
+2. 其次必须声明测试中所使用的实例变量
+3. 同时提供一个用@Parameters注释的方法（次数提供的是getTestParameters方法）。此外，这个方法的签名必须是public static java.util.Collection，无任何参数。Collection元素必须是相同长度的数组。这个数组的长度必须要喝这个唯一的公共构造函数的参数数组数量相匹配。
+4. 为测试指定需要的构造函数。参数的初始化方法
+5. 实现@Test方法
+6. 实例化程序
+7. 用断言调用提供的参数。
 
-#### fail断言 ####
 
-“fail”断言能使测试立即失败，这种断言通常用于标记某个不应该被到达的分支。例如assertTrue断言中，condition为false时就是正常情况下不应该出现的，所以测试将立即失败
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 123
