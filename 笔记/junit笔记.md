@@ -59,8 +59,11 @@ public class ParameterizedTest {
 7. 用断言调用提供的参数。
 
 
+## 用Suite组合测试 ##
+如果没有提供一个自己的Suite，那么测试运行器会自动创建一个Suite。
+默认的Suite会扫描测试类，找出所有以@Test注释的方法。默认的Suite会在内部为每个@Test方法创建一个测试类的实例。然后JUnit就会独立地执行每个@Test方法，以避免潜在的负面影响。
 
-
+Suite对象其实是一个Runner，可以执行测试类中所有@Test注释的方法。
 
 
 
