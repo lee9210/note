@@ -1,0 +1,50 @@
+泛型是JDK5带给我们的新特性，虽然它处于历史原因，有不完善的地方。但是更多的还是给与我们带来方便的。下面先简要先说说它的优点：
+
+泛型就是参数化类型：
+
+适用于多种数据类型执行相同的代码
+泛型中的类型在使用时指定
+泛型归根到底就是“模版”
+优点：使用泛型时，在实际使用之前类型就已经确定了，不需要强制类型转换。提高安全性。
+可以有：
+
+泛型类型
+泛型类
+泛型接口
+泛型方法
+泛型的继承 extends/super
+泛型通配符
+为什么说Java的泛型是"假"的呢？
+其实Java为了向下兼容，提出来的泛型只是一个语法糖，并不是像c++那样是真的泛型。下面我通过两个简单的例子，可以让大家感受一下：
+
+   public static void main(String[] args) throws Exception {
+        List<Integer> list = new ArrayList<>();
+        list.add(1);
+        //list.add("a"); // 这样直接添加肯定是不允许的
+
+        //下面通过java的反射，绕过泛型  来给添加字符串
+        Method add = list.getClass().getMethod("add", Object.class);
+        add.invoke(list,"a");
+
+        System.out.println(list); //[1, a] 输出没有没问题
+        System.out.println(list.get(1)); //a
+    }
+
+这里面就证明了虽然List声明为只能装Integer类型，但是我却放进去了字符串类型，由此课件，泛型是“假”的，只存在于编译期。再看一个例子：
+
+  public static void main(String[] args) throws Exception {
+        Map<String, String> map = new HashMap<>();
+        String key = "key";
+        Integer val = new Integer(1); //备注：此方法在Java9后标注为过期了，建议使用valueOf，使用缓存来提高效率
+        Method m = HashMap.class.getDeclaredMethod("put", new Class[]{Object.class, Object.class});
+        m.invoke(map, key, val);
+
+        System.out.println(map); //{key=1}
+        //但是下面的输出会报错
+        System.out.println(map.get(key)); // java.lang.ClassCastException: java.lang.Integer cannot be cast to java.lang.String
+    }
+
+此处需要注意了，虽然1放进去了。但是get出来的时候会报错，因为强转失败
+
+最后
+虽然java中的泛型是“假”的，会有泛型擦除的操作，但是不可否则，泛型的引入对java语言影响还是挺大的，让它上升了一大步
