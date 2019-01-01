@@ -159,52 +159,84 @@ private XPath xpath;
 
 ### 2.1.1 构造方法 ###
 
+````
+/**
+ * 构造 XPathParser 对象
+ *
+ * @param xml XML 文件地址
+ * @param validation 是否校验 XML
+ * @param variables 变量 Properties 对象
+ * @param entityResolver XML 实体解析器
+ */
+public XPathParser(String xml, boolean validation, Properties variables, EntityResolver entityResolver) {
+    commonConstructor(validation, variables, entityResolver);
+    this.document = createDocument(new InputSource(new StringReader(xml)));
+}
+````
+基本逻辑：
+1. 调用 #commonConstructor(boolean validation, Properties variables, EntityResolver entityResolver) 方法，公用的构造方法逻辑。
+2. commonConstructor(validation, variables, entityResolver) 调用 #createDocument(InputSource inputSource) 方法，将 XML 文件解析成 Document 对象。
 
+### 2.1.2 eval 方法族 ###
+XPathParser 提供了一系列的 #eval* 方法，用于获得 Boolean、Short、Integer、Long、Float、Double、String、Node 类型的元素或节点的“值”。当然，虽然方法很多，但是都是基于 #evaluate(String expression, Object root, QName returnType) 方法
 
+evaluate(String expression, Object root, QName returnType)函数：调用 xpath 的 evaluate(String expression, Object root, QName returnType) 方法，获得指定元素或节点的值。
 
+#### 2.1.2.1 eval 元素 ####
+eval 元素的方法，用于获得 Boolean、Short、Integer、Long、Float、Double、String 类型的元素的值。例如#evalString(Object root, String expression)函数
 
+````
+public String evalString(Object root, String expression) {
+    String result = (String) evaluate(expression, root, XPathConstants.STRING);
+    result = PropertyParser.parse(result, variables);
+    return result;
+}
+````
+基本流程为：
+1. 调用 #evaluate(String expression, Object root, QName returnType) 方法，获得值。其中，returnType 方法传入的是 XPathConstants.STRING ，表示返回的值是 String 类型。
+2. 调用 PropertyParser#parse(String string, Properties variables) 方法，基于 variables 替换动态值，如果 result 为动态值。这就是 MyBatis 如何替换掉 XML 中的动态值实现的方式。
 
+#### 2.1.2.2 eval 节点 ####
+eval 元素的方法，用于获得 Node 类型的节点的值。
 
+主要流程：
+1. 返回结果有 Node 对象和数组两种情况，根据方法参数 expression 需要获取的节点不同。
+2. 最终结果会将 Node 封装成 org.apache.ibatis.parsing.XNode 对象，主要为了动态值的替换。
 
+## 2.2 XMLMapperEntityResolver ##
+org.apache.ibatis.builder.xml.XMLMapperEntityResolver ，实现 EntityResolver 接口，MyBatis 自定义 EntityResolver 实现类，用于加载本地的 mybatis-3-config.dtd 和 mybatis-3-mapper.dtd 这两个 DTD 文件。
 
+## 2.3 GenericTokenParser ##
 
+org.apache.ibatis.parsing.GenericTokenParser ，通用的 Token 解析器。
 
+即通配符解析器。#和$匹配，比如openToken为"${" ，closeToken为"}",openToken和closeToken中间截取的值为表达式，根据表达式来获取实际的值，并把值放入字符串中，组成实际的值。
 
+## 2.4 PropertyParser ##
+org.apache.ibatis.parsing.PropertyParser ，动态属性解析器。
 
+parse(String string, Properties variables)函数：
+基本流程：
+1. 创建 VariableTokenHandler 对象。
+2. 创建 GenericTokenParser 对象。
+3. 调用 GenericTokenParser#parse(String text) 方法，执行解析。
 
+## 2.5 TokenHandler ##
+org.apache.ibatis.parsing.TokenHandler ，Token 处理器接口。
 
+handleToken(String content) 方法，处理 Token 
 
+TokenHandler 有四个子类实现
 
+### 2.5.1 VariableTokenHandler ###
+VariableTokenHandler ，是 PropertyParser 的内部静态类，变量 Token 处理器。
 
+#### 2.5.1.1 构造方法 ####
 
+# 3 反射模块 #
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+## 3.1 Reflector ##
+org.apache.ibatis.reflection.Reflector ，反射器，每个 Reflector 对应一个类。Reflector 会缓存反射操作需要的类的信息，例如：构造方法、属性名、setting / getting 方法等等。
 
 
 
