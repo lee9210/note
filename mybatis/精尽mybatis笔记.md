@@ -233,89 +233,94 @@ VariableTokenHandler ，是 PropertyParser 的内部静态类，变量 Token 处
 
 #### 2.5.1.1 构造方法 ####
 
+------
+
 # 3 反射模块 #
 
 ## 3.1 Reflector ##
 org.apache.ibatis.reflection.Reflector ，反射器，每个 Reflector 对应一个类。Reflector 会缓存反射操作需要的类的信息，例如：构造方法、属性名、setting / getting 方法等等。
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+````
+public class Reflector {
+
+    /**
+     * 每个 Reflector 对应的类
+     */
+    private final Class<?> type;
+    /**
+     * 可读属性数组
+     */
+    private final String[] readablePropertyNames;
+    /**
+     * 可写属性集合
+     */
+    private final String[] writeablePropertyNames;
+    /**
+     * 属性对应的 setting 方法的映射。
+     *
+     * key 为属性名称
+     * value 为 Invoker 对象
+     */
+    private final Map<String, Invoker> setMethods = new HashMap<>();
+    /**
+     * 属性对应的 getting 方法的映射。
+     *
+     * key 为属性名称
+     * value 为 Invoker 对象
+     */
+    private final Map<String, Invoker> getMethods = new HashMap<>();
+    /**
+     * 属性对应的 setting 方法的方法参数类型的映射。{@link #setMethods}
+     *
+     * key 为属性名称
+     * value 为方法参数类型
+     */
+    private final Map<String, Class<?>> setTypes = new HashMap<>();
+    /**
+     * 属性对应的 getting 方法的返回值类型的映射。{@link #getMethods}
+     *
+     * key 为属性名称
+     * value 为返回值的类型
+     */
+    private final Map<String, Class<?>> getTypes = new HashMap<>();
+    /**
+     * 默认无参构造方法
+     */
+    private Constructor<?> defaultConstructor;
+    /**
+     * 不区分大小写的属性集合
+     */
+    private Map<String, String> caseInsensitivePropertyMap = new HashMap<>();
+
+    public Reflector(Class<?> clazz) {
+        // 设置对应的类
+        type = clazz;
+        // <1> 初始化 defaultConstructor
+        addDefaultConstructor(clazz);
+        // <2> // 初始化 getMethods 和 getTypes ，通过遍历 getting 方法
+        addGetMethods(clazz);
+        // <3> // 初始化 setMethods 和 setTypes ，通过遍历 setting 方法。
+        addSetMethods(clazz);
+        // <4> // 初始化 getMethods + getTypes 和 setMethods + setTypes ，通过遍历 fields 属性。
+        addFields(clazz);
+        // <5> 初始化 readablePropertyNames、writeablePropertyNames、caseInsensitivePropertyMap 属性
+        readablePropertyNames = getMethods.keySet().toArray(new String[getMethods.keySet().size()]);
+        writeablePropertyNames = setMethods.keySet().toArray(new String[setMethods.keySet().size()]);
+        for (String propName : readablePropertyNames) {
+            caseInsensitivePropertyMap.put(propName.toUpperCase(Locale.ENGLISH), propName);
+        }
+        for (String propName : writeablePropertyNames) {
+            caseInsensitivePropertyMap.put(propName.toUpperCase(Locale.ENGLISH), propName);
+        }
+    }
+    
+    // ... 省略一些方法
+}
+````
+
+### 3.1.1 addDefaultConstructor ###
+addDefaultConstructor(Class<?> clazz) 方法，查找默认无参构造方法。
 
 
 
