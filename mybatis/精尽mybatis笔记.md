@@ -431,7 +431,7 @@ private void resolveGetterConflicts(Map<String, List<Method>> conflictingGetters
             Class<?> candidateType = candidate.getReturnType();
             // 类型相同
             if (candidateType.equals(winnerType)) {
-                // 返回值了诶选哪个相同，应该在 getClassMethods 方法中，已经合并。所以抛出 ReflectionException 异常
+                // 返回值选哪个相同，应该在 getClassMethods 方法中，已经合并。所以抛出 ReflectionException 异常
                 if (!boolean.class.equals(candidateType)) {
                     throw new ReflectionException(
                             "Illegal overloaded getter method with ambiguous type for property "
@@ -460,7 +460,278 @@ private void resolveGetterConflicts(Map<String, List<Method>> conflictingGetters
     }
 }
 ````
+测试代码：
+org.apache.ibatis.reflection.ReflectorTest#shouldAllowTwoBooleanGetters()可以看出，当有get和is两种方法，则选择is方法。
 
+
+<1> 处，基于返回类型比较。重点在 <1.1> 和 <1.2> 的情况，因为子类可以修改放大返回值，所以在出现这个情况时，选择子类的该方法。例如，父类的一个方法的返回值为 List ，子类对该方法的返回值可以覆写为 ArrayList 。代码如下：
+
+````
+public class A {
+    List<String> getXXXX();
+}
+public class B extends B {
+    ArrayList<String> getXXXX(); // 选择它
+}
+````
+<2> 处，调用 #addGetMethod(String name, Method method) 方法，添加方法到 getMethods 和 getTypes 中。
+````
+private void addGetMethod(String name, Method method) {
+    // <2.1> 判断是合理的属性名
+    if (isValidPropertyName(name)) {
+        // <2.2> 添加到 getMethods 中
+        getMethods.put(name, new MethodInvoker(method));
+        // <2.3> 添加到 getTypes 中
+        Type returnType = TypeParameterResolver.resolveReturnType(method, type);
+        getTypes.put(name, typeToClass(returnType));
+    }
+}
+````
+
+typeToClass(Type src) 方法，获得 java.lang.reflect.Type 真正对应的类
+
+````
+private Class<?> typeToClass(Type src) {
+    Class<?> result = null;
+    // 普通类型，直接使用类
+    if (src instanceof Class) {
+        result = (Class<?>) src;
+    // 泛型类型，使用泛型
+    } else if (src instanceof ParameterizedType) {
+        result = (Class<?>) ((ParameterizedType) src).getRawType();
+    // 泛型数组，获得具体类
+    } else if (src instanceof GenericArrayType) {
+        Type componentType = ((GenericArrayType) src).getGenericComponentType();
+        if (componentType instanceof Class) { // 普通类型
+            result = Array.newInstance((Class<?>) componentType, 0).getClass();
+        } else {
+            Class<?> componentClass = typeToClass(componentType); // 递归该方法，返回类
+            result = Array.newInstance(componentClass, 0).getClass();
+        }
+    }
+    // 都不符合，使用 Object 类
+    if (result == null) {
+        result = Object.class;
+    }
+    return result;
+}
+````
+
+### 3.1.3 addSetMethods ###
+addSetMethods(Class<?> cls) 方法，初始化 setMethods 和 setTypes ，通过遍历 setting 方法。
+
+````
+private void addSetMethods(Class<?> cls) {
+    // 属性与其 setting 方法的映射。
+    Map<String, List<Method>> conflictingSetters = new HashMap<>();
+    // 获得所有方法
+    Method[] methods = getClassMethods(cls);
+    // 遍历所有方法
+    for (Method method : methods) {
+        String name = method.getName();
+        // <1> 方法名为 set 开头
+        // 参数数量为 1
+        if (name.startsWith("set") && name.length() > 3) {
+            if (method.getParameterTypes().length == 1) {
+                // 获得属性
+                name = PropertyNamer.methodToProperty(name);
+                // 添加到 conflictingSetters 中
+                addMethodConflict(conflictingSetters, name, method);
+            }
+        }
+    }
+    // <2> 解决 setting 冲突方法
+    resolveSetterConflicts(conflictingSetters);
+}
+````
+
+总体逻辑和 #addGetMethods(Class<?> cls) 方法差不多。主要差异点在 <1> 和 <2> 处。因为 <1> 一眼就能明白，所以我们只看 <2> ，调用 #resolveSetterConflicts(Map<String, List<Method>> conflictingSetters) 方法，解决 setting 冲突方法。
+
+#### 3.1.3.1 resolveSetterConflicts ####
+resolveSetterConflicts(Map<String, List<Method>> conflictingSetters) 方法，解决 setting 冲突方法
+````
+private void resolveSetterConflicts(Map<String, List<Method>> conflictingSetters) {
+    // 遍历每个属性，查找其最匹配的方法。因为子类可以覆写父类的方法，所以一个属性，可能对应多个 setting 方法
+    for (String propName : conflictingSetters.keySet()) {
+        List<Method> setters = conflictingSetters.get(propName);
+        Class<?> getterType = getTypes.get(propName);
+        Method match = null;
+        ReflectionException exception = null;
+        // <1> 解决冲突 setting 方法的方式，实际和 getting 方法的方式是不太一样的。首先，多的就是考虑了对应的 getterType 为优先级最高。其次，#pickBetterSetter(Method setter1, Method setter2, String property) 方法，选择一个更加匹配的，和 getting 方法是相同的，因为要选择精准的方法。
+        for (Method setter : setters) {
+            Class<?> paramType = setter.getParameterTypes()[0];
+            // 和 getterType 相同，直接使用
+            if (paramType.equals(getterType)) {
+                // should be the best match
+                match = setter;
+                break;
+            }
+            if (exception == null) {
+                try {
+                    // 选择一个更加匹配的
+                    match = pickBetterSetter(match, setter, propName);
+                } catch (ReflectionException e) {
+                    // there could still be the 'best match'
+                    match = null;
+                    exception = e;
+                }
+            }
+        }
+        // <2> 添加到 setMethods 和 setTypes 中
+        if (match == null) {
+            throw exception;
+        } else {
+            addSetMethod(propName, match);
+        }
+    }
+}
+````
+
+### 3.1.4 addFields ###
+addFields(Class<?> clazz) 方法，初始化 getMethods + getTypes 和 setMethods + setTypes ，通过遍历 fields 属性。实际上，它是 #addGetMethods(...) 和 #addSetMethods(...) 方法的补充，因为有些 field ，不存在对应的 setting 或 getting 方法，所以直接使用对应的 field ，而不是方法。
+````
+private void addFields(Class<?> clazz) {
+    // 获得所有 field 们
+    Field[] fields = clazz.getDeclaredFields();
+    for (Field field : fields) {
+        // 设置 field 可访问
+        if (canControlMemberAccessible()) {
+            try {
+                field.setAccessible(true);
+            } catch (Exception e) {
+                // Ignored. This is only a final precaution, nothing we can do.
+            }
+        }
+        if (field.isAccessible()) {
+            // <1> 若 setMethods 不存在，则调用 #addSetField(Field field) 方法，添加到 setMethods 和 setTypes 中。
+            if (!setMethods.containsKey(field.getName())) {
+                // issue #379 - removed the check for final because JDK 1.5 allows
+                // modification of final fields through reflection (JSR-133). (JGB)
+                // pr #16 - final static can only be set by the classloader
+                int modifiers = field.getModifiers();
+                if (!(Modifier.isFinal(modifiers) && Modifier.isStatic(modifiers))) {
+                    addSetField(field);
+                }
+            }
+            // 添加到 getMethods 和 getTypes 中
+            if (!getMethods.containsKey(field.getName())) {
+                addGetField(field);
+            }
+        }
+    }
+    // 递归，处理父类
+    if (clazz.getSuperclass() != null) {
+        addFields(clazz.getSuperclass());
+    }
+}
+````
+### 3.1.5 其它方法 ###
+Reflector 中，还有其它方法，用于对它的属性进行访问。
+
+
+## 3.2 ReflectorFactory ##
+org.apache.ibatis.reflection.ReflectorFactory ，Reflector 工厂接口，用于创建和缓存 Reflector 对象。
+
+### 3.2.1 DefaultReflectorFactory ###
+org.apache.ibatis.reflection.DefaultReflectorFactory ，实现 ReflectorFactory 接口，默认的 ReflectorFactory 实现类。
+
+## 3.3 Invoker ##
+org.apache.ibatis.reflection.invoker.Invoker ，调用者接口。
+
+````
+public interface Invoker {
+
+    /**
+     * 执行调用
+     * @param target 目标
+     * @param args 参数
+     * @return 结果
+     * @throws IllegalAccessException
+     * @throws InvocationTargetException
+     */
+    Object invoke(Object target, Object[] args) throws IllegalAccessException, InvocationTargetException;
+
+    /**
+     * @return 类
+     */
+    Class<?> getType();
+
+}
+````
+- 核心是 invoke(Object target, Object[] args) 方法，执行一次调用。而具体调用什么方法，由子类来实现。
+
+### 3.3.1 GetFieldInvoker ###
+org.apache.ibatis.reflection.invoker.GetFieldInvoker ，实现 Invoker 接口，获得 Field 调用者。
+
+### 3.3.2 SetFieldInvoker ###
+org.apache.ibatis.reflection.invoker.SetFieldInvoker ，实现 Invoker 接口，设置 Field 调用者。
+
+### 3.3.3 MethodInvoker ###
+org.apache.ibatis.reflection.invoker.MethodInvoker ，实现 Invoker 接口，指定方法的调用器。
+
+````
+public class MethodInvoker implements Invoker {
+
+    /**
+     * 类型
+     */
+    private final Class<?> type;
+    /**
+     * 指定方法
+     */
+    private final Method method;
+    public MethodInvoker(Method method) {
+        this.method = method;
+
+        // 参数大小为 1 时，一般是 setting 方法，设置 type 为方法参数[0]
+        if (method.getParameterTypes().length == 1) {
+            type = method.getParameterTypes()[0];
+        // 否则，一般是 getting 方法，设置 type 为返回类型
+        } else {
+            type = method.getReturnType();
+        }
+    }
+    // 执行指定方法
+    @Override
+    public Object invoke(Object target, Object[] args) throws IllegalAccessException, InvocationTargetException {
+        return method.invoke(target, args);
+    }
+    @Override
+    public Class<?> getType() {
+        return type;
+    }
+}
+````
+
+## 3.4 ObjectFactory ##
+org.apache.ibatis.reflection.factory.ObjectFactory ，Object 工厂接口，用于创建指定类的对象。
+
+````
+public interface ObjectFactory {
+
+  /**
+   * 设置 Properties
+   */
+  void setProperties(Properties properties);
+
+  /**
+   * 创建指定类的对象，使用默认构造方法
+   */
+  <T> T create(Class<T> type);
+
+  /**
+   * 创建指定类的对象，使用特定的构造方法
+   */
+  <T> T create(Class<T> type, List<Class<?>> constructorArgTypes, List<Object> constructorArgs);
+  
+  /**
+   * 判断指定类是否为集合类
+   */
+  <T> boolean isCollection(Class<T> type);
+}
+````
+### 3.4.1 DefaultObjectFactory ###
+org.apache.ibatis.reflection.factory.DefaultObjectFactory ，实现 ObjectFactory、Serializable 接口，默认 ObjectFactory 实现类。
 
 
 ----
