@@ -321,22 +321,145 @@ public class Reflector {
 
 ### 3.1.1 addDefaultConstructor ###
 addDefaultConstructor(Class<?> clazz) 方法，查找默认无参构造方法。
+````
+private void addDefaultConstructor(Class<?> clazz) {
+    // 获得所有构造方法
+    Constructor<?>[] consts = clazz.getDeclaredConstructors();
+    // 遍历所有构造方法，查找无参的构造方法
+    for (Constructor<?> constructor : consts) {
+        // 判断无参的构造方法
+        if (constructor.getParameterTypes().length == 0) {
+            // 设置构造方法可以访问，避免是 private 等修饰符
+            if (canControlMemberAccessible()) {
+                try {
+                    constructor.setAccessible(true);
+                } catch (Exception e) {
+                    // Ignored. This is only a final precaution, nothing we can do.
+                }
+            }
+            // 如果构造方法可以访问，赋值给 defaultConstructor
+            if (constructor.isAccessible()) {
+                this.defaultConstructor = constructor;
+            }
+        }
+    }
+}
 
+/**
+ * Checks whether can control member accessible.
+ *
+ * 判断，是否可以修改可访问性
+ *
+ * @return If can control member accessible, it return {@literal true}
+ * @since 3.5.0
+ */
+public static boolean canControlMemberAccessible() {
+    try {
+        SecurityManager securityManager = System.getSecurityManager();
+        if (null != securityManager) {
+            securityManager.checkPermission(new ReflectPermission("suppressAccessChecks"));
+        }
+    } catch (SecurityException e) {
+        return false;
+    }
+    return true;
+}
+````
+设置class的默认构造方法，为public修饰并且赋值给defaultConstructor属性。
 
+### 3.1.2 addGetMethods ###
+addGetMethods(Class<?> cls) 方法，初始化 getMethods 和 getTypes ，通过遍历 getting 方法。
 
+````
+private void addGetMethods(Class<?> cls) {
+    // <1> 属性与其 getting 方法的映射。conflictingGetters 变量，属性与其 getting 方法的映射。因为父类和子类都可能定义了相同属性的 getting 方法，所以 VALUE 会是个数组。
+    Map<String, List<Method>> conflictingGetters = new HashMap<>();
+    // <2> 调用 #getClassMethods(Class<?> cls) 方法，获得所有方法。
+    Method[] methods = getClassMethods(cls);
+    // <3> 遍历所有方法，挑选符合的 getting 方法，添加到 conflictingGetters 中。
+    for (Method method : methods) {
+        // <3.1> 参数大于 0 ，说明不是 getting 方法，忽略
+        if (method.getParameterTypes().length > 0) {
+            continue;
+        }
+        // <3.2> 以 get 和 is 方法名开头，说明是 getting 方法
+        String name = method.getName();
+        if ((name.startsWith("get") && name.length() > 3)
+                || (name.startsWith("is") && name.length() > 2)) {
+            // <3.3> 获得属性
+            name = PropertyNamer.methodToProperty(name);
+            // <3.4> 添加到 conflictingGetters 中
+            addMethodConflict(conflictingGetters, name, method);
+        }
+    }
+    // <4> 解决 getting 冲突方法
+    resolveGetterConflicts(conflictingGetters);
+}
+````
 
+````
+/**
+ * 解决方法冲突
+private void addMethodConflict(Map<String, List<Method>> conflictingMethods, String name, Method method) {
+    List<Method> list = conflictingMethods.computeIfAbsent(name, k -> new ArrayList<>());
+    list.add(method);
+}
+````
+代码说明：如果获取的name的值为空，则用k代替。Map.computeIfAbsent()函数会检测第一个参数的值，如果为空，则用第二个参数代替
 
+#### 3.1.2.1 getClassMethods ####
+getClassMethods(Class<?> cls) 方法，获得所有方法，包括父类的所有方法，
 
+#### 3.1.2.2 resolveGetterConflicts ####
 
+resolveGetterConflicts(Map<String, List<Method>>) 方法，解决 getting 冲突方法。最终，一个属性，只保留一个对应的方法。
 
-
-
-
-
-
-
-
-
+````
+private void resolveGetterConflicts(Map<String, List<Method>> conflictingGetters) {
+    // 遍历每个属性，查找其最匹配的方法。因为子类可以覆写父类的方法，所以一个属性，可能对应多个 getting 方法
+    for (Entry<String, List<Method>> entry : conflictingGetters.entrySet()) {
+        Method winner = null; // 最匹配的方法
+        String propName = entry.getKey();
+        for (Method candidate : entry.getValue()) {
+            // winner 为空，说明 candidate 为最匹配的方法
+            if (winner == null) {
+                winner = candidate;
+                continue;
+            }
+            // <1> 基于返回类型比较
+            Class<?> winnerType = winner.getReturnType();
+            Class<?> candidateType = candidate.getReturnType();
+            // 类型相同
+            if (candidateType.equals(winnerType)) {
+                // 返回值了诶选哪个相同，应该在 getClassMethods 方法中，已经合并。所以抛出 ReflectionException 异常
+                if (!boolean.class.equals(candidateType)) {
+                    throw new ReflectionException(
+                            "Illegal overloaded getter method with ambiguous type for property "
+                                    + propName + " in class " + winner.getDeclaringClass()
+                                    + ". This breaks the JavaBeans specification and can cause unpredictable results.");
+                // 选择 boolean 类型的 is 方法
+                } else if (candidate.getName().startsWith("is")) {
+                    winner = candidate;
+                }
+            // 不符合选择子类
+            } else if (candidateType.isAssignableFrom(winnerType)) {
+                // OK getter type is descendant
+            // <1.1> 符合选择子类。因为子类可以修改放大返回值。例如，父类的一个方法的返回值为 List ，子类对该方法的返回值可以覆写为 ArrayList 。
+            } else if (winnerType.isAssignableFrom(candidateType)) {
+                winner = candidate;
+            // <1.2> 返回类型冲突，抛出 ReflectionException 异常
+            } else {
+                throw new ReflectionException(
+                        "Illegal overloaded getter method with ambiguous type for property "
+                                + propName + " in class " + winner.getDeclaringClass()
+                                + ". This breaks the JavaBeans specification and can cause unpredictable results.");
+            }
+        }
+        // <2> 添加到 getMethods 和 getTypes 中
+        addGetMethod(propName, winner);
+    }
+}
+````
 
 
 
