@@ -1299,4 +1299,435 @@ public MetaObject instantiatePropertyValue(String name, PropertyTokenizer prop, 
     return metaValue;
 }
 ````
+
+##### 3.7.1.1.6 isCollection #####
+返回false
+
+
+#### 3.7.1.2 MapWrapper ####
+org.apache.ibatis.reflection.wrapper.MapWrapper ，继承 BaseWrapper 抽象类，Map 对象的 ObjectWrapper 实现类。
+
+MapWrapper 和 BeanWrapper 的大体逻辑是一样的
+
+### 3.7.2 CollectionWrapper ###
+org.apache.ibatis.reflection.wrapper.CollectionWrapper ，实现 ObjectWrapper 接口，集合 ObjectWrapper 实现类。
+
+## 3.8 ObjectWrapperFactory ##
+org.apache.ibatis.reflection.wrapper.ObjectWrapperFactory ，ObjectWrapper 工厂接口。
+
+默认不使用ObjectWrapperFactory
+### 3.8.1 DefaultObjectWrapperFactory ###
+org.apache.ibatis.reflection.wrapper.DefaultObjectWrapperFactory ，实现 ObjectWrapperFactory 接口，默认 ObjectWrapperFactory 实现类。
+
+## 3.9 MetaObject ##
+org.apache.ibatis.reflection.MetaObject ，对象元数据，提供了对象的属性值的获得和设置等等方法。
+
+### 3.9.1 构造方法 ###
+
+````
+/**
+ * 原始 Object 对象
+ */
+private final Object originalObject;
+/**
+ * 封装过的 Object 对象
+ */
+private final ObjectWrapper objectWrapper;
+private final ObjectFactory objectFactory;
+private final ObjectWrapperFactory objectWrapperFactory;
+private final ReflectorFactory reflectorFactory;
+
+private MetaObject(Object object, ObjectFactory objectFactory, ObjectWrapperFactory objectWrapperFactory, ReflectorFactory reflectorFactory) {
+    this.originalObject = object;
+    this.objectFactory = objectFactory;
+    this.objectWrapperFactory = objectWrapperFactory;
+    this.reflectorFactory = reflectorFactory;
+
+    // 会根据 object 类型的不同，创建对应的 ObjectWrapper 对象。
+    if (object instanceof ObjectWrapper) {
+        this.objectWrapper = (ObjectWrapper) object;
+    } else if (objectWrapperFactory.hasWrapperFor(object)) { // <2>
+        // 创建 ObjectWrapper 对象
+        this.objectWrapper = objectWrapperFactory.getWrapperFor(this, object);
+    } else if (object instanceof Map) {
+        // 创建 MapWrapper 对象
+        this.objectWrapper = new MapWrapper(this, (Map) object);
+    } else if (object instanceof Collection) {
+        // 创建 CollectionWrapper 对象
+        this.objectWrapper = new CollectionWrapper(this, (Collection) object);
+    } else {
+        // 创建 BeanWrapper 对象
+        this.objectWrapper = new BeanWrapper(this, object);
+    }
+}
+````
+
+### 3.9.2 forObject ###
+forObject(Object object, ObjectFactory objectFactory, ObjectWrapperFactory objectWrapperFactory, ReflectorFactory reflectorFactory) 静态方法，创建 MetaObject 对象。
+
+````
+/**
+ * 创建 MetaObject 对象
+ * @param object 原始 Object 对象
+ * @param objectFactory
+ * @param objectWrapperFactory
+ * @param reflectorFactory
+ * @return MetaObject 对象
+ */
+public static MetaObject forObject(Object object, ObjectFactory objectFactory, ObjectWrapperFactory objectWrapperFactory, ReflectorFactory reflectorFactory) {
+    if (object == null) {
+        return SystemMetaObject.NULL_META_OBJECT;
+    } else {
+        return new MetaObject(object, objectFactory, objectWrapperFactory, reflectorFactory);
+    }
+}
+````
+如果 object 为空的情况下，返回 SystemMetaObject.NULL_META_OBJECT 。
+
+### 3.9.3 metaObjectForProperty ###
+metaObjectForProperty(String name) 方法，创建指定属性的 MetaObject 对象。
+
+````
+public MetaObject metaObjectForProperty(String name) {
+    // 获得属性值
+    Object value = getValue(name);
+    // 创建 MetaObject 对象
+    return MetaObject.forObject(value, objectFactory, objectWrapperFactory, reflectorFactory);
+}
+````
+
+### 3.9.4 getValue ###
+getValue(String name) 方法，获得指定属性的值。
+
+````
+public Object getValue(String name) {
+    // 创建 PropertyTokenizer 对象，对 name 分词
+    PropertyTokenizer prop = new PropertyTokenizer(name);
+    // 有子表达式
+    if (prop.hasNext()) {
+        // 创建 MetaObject 对象
+        MetaObject metaValue = metaObjectForProperty(prop.getIndexedName());
+        // <2> 递归判断子表达式 children ，获取值
+        if (metaValue == SystemMetaObject.NULL_META_OBJECT) {
+            return null;
+        } else {
+            return metaValue.getValue(prop.getChildren());
+        }
+    // 无子表达式
+    } else {
+        // <1> 获取值
+        return objectWrapper.get(prop);
+    }
+}
+````
+
+### 3.9.5 setValue ###
+setValue(String name, Object value) 方法，设置指定属性的指定值。
+
+````
+public void setValue(String name, Object value) {
+    // 创建 PropertyTokenizer 对象，对 name 分词
+    PropertyTokenizer prop = new PropertyTokenizer(name);
+    // 有子表达式
+    if (prop.hasNext()) {
+        // 创建 MetaObject 对象
+        MetaObject metaValue = metaObjectForProperty(prop.getIndexedName());
+        // 递归判断子表达式 children ，设置值
+        if (metaValue == SystemMetaObject.NULL_META_OBJECT) {
+            if (value == null) {
+                // don't instantiate child path if value is null
+                return;
+            } else {
+                // <1> 创建值
+                metaValue = objectWrapper.instantiatePropertyValue(name, prop, objectFactory);
+            }
+        }
+        // 设置值
+        metaValue.setValue(prop.getChildren(), value);
+    // 无子表达式
+    } else {
+        // <1> 设置值
+        objectWrapper.set(prop, value);
+    }
+}
+````
+
+### 3.9.6 isCollection ###
+isCollection() 方法，判断是否为集合。
+
+## 3.10 SystemMetaObject ##
+org.apache.ibatis.reflection.SystemMetaObject ，系统级的 MetaObject 对象，主要提供了 ObjectFactory、ObjectWrapperFactory、空 MetaObject 的单例。
+
+````
+public final class SystemMetaObject {
+
+    /**
+     * ObjectFactory 的单例
+     */
+    public static final ObjectFactory DEFAULT_OBJECT_FACTORY = new DefaultObjectFactory();
+    /**
+     * ObjectWrapperFactory 的单例
+     */
+    public static final ObjectWrapperFactory DEFAULT_OBJECT_WRAPPER_FACTORY = new DefaultObjectWrapperFactory();
+
+    /**
+     * 空对象的 MetaObject 对象单例
+     */
+    public static final MetaObject NULL_META_OBJECT = MetaObject.forObject(NullObject.class, DEFAULT_OBJECT_FACTORY, DEFAULT_OBJECT_WRAPPER_FACTORY, new DefaultReflectorFactory());
+
+    private SystemMetaObject() {
+        // Prevent Instantiation of Static Class
+    }
+
+    private static class NullObject {
+    }
+
+    /**
+     * 创建 MetaObject 对象
+     *
+     * @param object 指定对象
+     * @return MetaObject 对象
+     */
+    public static MetaObject forObject(Object object) {
+        return MetaObject.forObject(object, DEFAULT_OBJECT_FACTORY, DEFAULT_OBJECT_WRAPPER_FACTORY, new DefaultReflectorFactory());
+    }
+}
+````
+核心就是 #forObject(Object object) 方法，创建指定对象的 MetaObject 对象。
+
+## 3.11 ParamNameUtil ##
+org.apache.ibatis.reflection.ParamNameUtil ，参数名工具类，获得构造方法、普通方法的参数列表。
+
+````
+public class ParamNameUtil {
+
+    /**
+     * 获得普通方法的参数列表
+     *
+     * @param method 普通方法
+     * @return 参数集合
+     */
+    public static List<String> getParamNames(Method method) {
+        return getParameterNames(method);
+    }
+
+    /**
+     * 获得构造方法的参数列表
+     *
+     * @param constructor 构造方法
+     * @return 参数集合
+     */
+    public static List<String> getParamNames(Constructor<?> constructor) {
+        return getParameterNames(constructor);
+    }
+
+    private static List<String> getParameterNames(Executable executable) {
+        final List<String> names = new ArrayList<>();
+        // 获得 Parameter 数组
+        final Parameter[] params = executable.getParameters();
+        // 获得参数名，并添加到 names 中
+        for (Parameter param : params) {
+            names.add(param.getName());
+        }
+        return names;
+    }
+
+    private ParamNameUtil() {
+        super();
+    }
+
+}
+````
+
+## 3.12 ParamNameResolver ##
+org.apache.ibatis.reflection.ParamNameResolver ，参数名解析器。
+
+````
+/*
+ * 参数名映射
+ *
+ * KEY：参数顺序
+ * VALUE：参数名
+ */
+private final SortedMap<Integer, String> names;
+/**
+ * 是否有 {@link Param} 注解的参数
+ */
+private boolean hasParamAnnotation;
+
+public ParamNameResolver(Configuration config, Method method) {
+    final Class<?>[] paramTypes = method.getParameterTypes();
+    final Annotation[][] paramAnnotations = method.getParameterAnnotations();
+    final SortedMap<Integer, String> map = new TreeMap<>();
+    int paramCount = paramAnnotations.length;
+    // get names from @Param annotations
+    for (int paramIndex = 0; paramIndex < paramCount; paramIndex++) {
+        // 忽略，如果是特殊参数
+        if (isSpecialParameter(paramTypes[paramIndex])) {
+            // skip special parameters
+            continue;
+        }
+        String name = null;
+        // 首先，从 @Param 注解中获取参数
+        for (Annotation annotation : paramAnnotations[paramIndex]) {
+            if (annotation instanceof Param) {
+                hasParamAnnotation = true;
+                name = ((Param) annotation).value();
+                break;
+            }
+        }
+        if (name == null) {
+            // @Param was not specified.
+            // 其次，获取真实的参数名
+            if (config.isUseActualParamName()) { // 默认开启
+                name = getActualParamName(method, paramIndex);
+            }
+            // 最差，使用 map 的顺序，作为编号
+            if (name == null) {
+                // use the parameter index as the name ("0", "1", ...)
+                // gcode issue #71
+                name = String.valueOf(map.size());
+            }
+        }
+        // 添加到 map 中
+        map.put(paramIndex, name);
+    }
+    // 构建不可变集合
+    names = Collections.unmodifiableSortedMap(map);
+}
+
+private String getActualParamName(Method method, int paramIndex) {
+    return ParamNameUtil.getParamNames(method).get(paramIndex);
+}
+
+private static boolean isSpecialParameter(Class<?> clazz) {
+    return RowBounds.class.isAssignableFrom(clazz) || ResultHandler.class.isAssignableFrom(clazz);
+}
+````
+
+### 3.12.1 getNamedParams ###
+getNamedParams(Object[] args) 方法，获得参数名与值的映射。
+
+````
+private static final String GENERIC_NAME_PREFIX = "param";
+
+/**
+ * 获得参数名与值的映射
+ */
+public Object getNamedParams(Object[] args) {
+    final int paramCount = names.size();
+    // 无参数，则返回 null
+    if (args == null || paramCount == 0) {
+        return null;
+    // 只有一个非注解的参数，直接返回首元素
+    } else if (!hasParamAnnotation && paramCount == 1) {
+        return args[names.firstKey()];
+    } else {
+        // 集合。
+        // 组合 1 ：KEY：参数名，VALUE：参数值
+        // 组合 2 ：KEY：GENERIC_NAME_PREFIX + 参数顺序，VALUE ：参数值
+        final Map<String, Object> param = new ParamMap<>();
+        int i = 0;
+        // 遍历 names 集合
+        for (Map.Entry<Integer, String> entry : names.entrySet()) {
+            // 组合 1 ：添加到 param 中
+            param.put(entry.getValue(), args[entry.getKey()]);
+            // add generic param names (param1, param2, ...)
+            // 组合 2 ：添加到 param 中
+            final String genericParamName = GENERIC_NAME_PREFIX + String.valueOf(i + 1);
+            // ensure not to overwrite parameter named with @Param
+            if (!names.containsValue(genericParamName)) {
+                param.put(genericParamName, args[entry.getKey()]);
+            }
+            i++;
+        }
+        return param;
+    }
+}
+````
+
+## 3.13 TypeParameterResolver ##
+org.apache.ibatis.reflection.TypeParameterResolver ，工具类，java.lang.reflect.Type 参数解析器
+
+//  todo 
+
+## 3.14 ArrayUtil ##
+org.apache.ibatis.reflection.ArrayUtil ，数组工具类。
+
+## 3.15 ExceptionUtil ##
+org.apache.ibatis.reflection.ExceptionUtil ，异常工具类。
+
+----
+
+# 4 异常模块 #
+
+## 4.1 exceptions 包 ##
+### 4.1.1 IbatisException ###
+org.apache.ibatis.exceptions.IbatisException ，实现 RuntimeException 类，IBatis 的异常基类。
+
+- IbatisException 已经在 2015 年被废弃，取代它的是 PersistenceException 类。
+
+### 4.1.2 PersistenceException ###
+
+org.apache.ibatis.exceptions.PersistenceException ，继承 IbatisException 类，目前 MyBatis 真正的异常基类。
+
+#### 4.1.2.1 ExceptionFactory ####
+
+org.apache.ibatis.exceptions.ExceptionFactory ，异常工厂。
+
+### 4.1.3 TooManyResultsException ###
+
+org.apache.ibatis.exceptions.TooManyResultsException ，继承 PersistenceException 类，查询返回过多结果的异常。期望返回一条，实际返回了多条。
+
+## 4.2 parsing 包 ##
+### 4.2.1 ParsingException ###
+org.apache.ibatis.parsing.ParsingException ，继承 PersistenceException 类，解析异常。
+
+## 4.3 其它包 ##
+- reflection 包：ReflectionException
+- logging 包：LogException
+- builder 包：BuilderException、IncompleteElementException
+- scripting 包：ScriptingException
+- binding 包：BindingException
+- type 包：TypeException
+- session 包：SqlSessionException
+- cache 包：CacheException
+- transaction 包：TransactionException
+- datasource 包：DataSourceException
+- executor 包：ResultMapException、ExecutorException、BatchExecutorException
+- plugin 包：PluginException
+
+----
+
+# 5 数据源模块 #
+- 数据源是实际开发中常用的组件之一。现在开源的数据源都提供了比较丰富的功能，例如，连接池功能、检测连接状态等，选择性能优秀的数据源组件对于提升 ORM 框架乃至整个应用的性能都是非常重要的。
+- MyBatis 自身提供了相应的数据源实现，当然 MyBatis 也提供了与第三方数据源集成的接口，这些功能都位于数据源模块之中。
+
+## 5.1 DataSourceFactory ##
+org.apache.ibatis.datasource.DataSourceFactory ，javax.sql.DataSourceFactory 工厂接口。
+
+### 5.1.1 UnpooledDataSourceFactory ###
+org.apache.ibatis.datasource.unpooled.UnpooledDataSourceFactory ，实现 DataSourceFactory 接口，非池化的 DataSourceFactory 实现类。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ----
