@@ -1,4 +1,4 @@
-# 1 项目结构一览 #
+1 项目结构一览 #
 ## 1.1 整体架构 ##
 MyBatis 的整体架构分为三层：
 
@@ -733,5 +733,570 @@ public interface ObjectFactory {
 ### 3.4.1 DefaultObjectFactory ###
 org.apache.ibatis.reflection.factory.DefaultObjectFactory ，实现 ObjectFactory、Serializable 接口，默认 ObjectFactory 实现类。
 
+#### 3.4.1.1 create ####
+create(Class<T> type, ...) 方法，创建指定类的对象。
 
+主要的函数为：
+
+````
+public <T> T create(Class<T> type, List<Class<?>> constructorArgTypes, List<Object> constructorArgs) {
+    // <1> 获得需要创建的类
+    Class<?> classToCreate = resolveInterface(type);
+    // <2> 创建指定类的对象
+    return (T) instantiateClass(classToCreate, constructorArgTypes, constructorArgs);
+}
+````
+
+调用 #instantiateClass(Class<T> type, List<Class<?>> constructorArgTypes, List<Object> constructorArgs) 方法，创建指定类的对象。代码如下：
+
+````
+private <T> T instantiateClass(Class<T> type, List<Class<?>> constructorArgTypes, List<Object> constructorArgs) {
+    try {
+        Constructor<T> constructor;
+        // <x1> 通过无参构造方法，创建指定类的对象
+        if (constructorArgTypes == null || constructorArgs == null) {
+            constructor = type.getDeclaredConstructor();
+            if (!constructor.isAccessible()) {
+                constructor.setAccessible(true);
+            }
+            return constructor.newInstance();
+        }
+        // <x2> 使用特定构造方法，创建指定类的对象
+        constructor = type.getDeclaredConstructor(constructorArgTypes.toArray(new Class[constructorArgTypes.size()]));
+        if (!constructor.isAccessible()) {
+            constructor.setAccessible(true);
+        }
+        return constructor.newInstance(constructorArgs.toArray(new Object[constructorArgs.size()]));
+    } catch (Exception e) {
+        // 拼接 argTypes
+        StringBuilder argTypes = new StringBuilder();
+        if (constructorArgTypes != null && !constructorArgTypes.isEmpty()) {
+            for (Class<?> argType : constructorArgTypes) {
+                argTypes.append(argType.getSimpleName());
+                argTypes.append(",");
+            }
+            argTypes.deleteCharAt(argTypes.length() - 1); // remove trailing ,
+        }
+        // 拼接 argValues
+        StringBuilder argValues = new StringBuilder();
+        if (constructorArgs != null && !constructorArgs.isEmpty()) {
+            for (Object argValue : constructorArgs) {
+                argValues.append(String.valueOf(argValue));
+                argValues.append(",");
+            }
+            argValues.deleteCharAt(argValues.length() - 1); // remove trailing ,
+        }
+        // 抛出 ReflectionException 异常
+        throw new ReflectionException("Error instantiating " + type + " with invalid types (" + argTypes + ") or values (" + argValues + "). Cause: " + e, e);
+    }
+}
+````
+
+主要是根据传入的构造函数创建对象，主要步骤为：
+1. 如果传入的是无参构造函数，则用无参构造函数创建对象
+2. 如果传入的是有参数的构造函数，则根据传入的参数创建对象。
+
+#### 3.4.1.2 isCollection ####
+isCollection(Class<T> type) 方法，判断指定类是否为集合类。
+
+## 3.5 Property 工具类 ##
+org.apache.ibatis.reflection.property 包下，提供了 PropertyCopier、PropertyNamer、PropertyTokenizer 三个属性相关的工具类。
+ 
+### 3.5.1 PropertyCopier ###
+org.apache.ibatis.reflection.property.PropertyCopier ，属性复制器。
+
+主要功能是从原始类中，把所有信息都复制到目标类里面。类似于浅拷贝。但是两个类必须是继承关系。
+
+主要是下面的代码：
+````
+    /**
+     * 将 sourceBean 的属性，复制到 destinationBean 中
+     * @param type 指定类
+     * @param sourceBean 来源 Bean 对象
+     * @param destinationBean 目标 Bean 对象
+     */
+    public static void copyBeanProperties(Class<?> type, Object sourceBean, Object destinationBean) {
+        // 循环，从当前类开始，不断复制到父类，直到父类不存在
+        Class<?> parent = type;
+        while (parent != null) {
+            // 获得当前 parent 类定义的属性
+            final Field[] fields = parent.getDeclaredFields();
+            for (Field field : fields) {
+                try {
+                    // 设置属性可访问
+                    field.setAccessible(true);
+                    // 从 sourceBean 中，复制到 destinationBean 去
+                    field.set(destinationBean, field.get(sourceBean));
+                } catch (Exception e) {
+                    // Nothing useful to do, will only fail on final fields, which will be ignored.
+                }
+            }
+            // 获得父类
+            parent = parent.getSuperclass();
+        }
+    }
+````
+
+### 3.5.2 PropertyNamer ###
+org.apache.ibatis.reflection.property.PropertyNamer ，属性名相关的工具类方法。主要判断是否是属性设置或获取或判断的static方法。
+
+
+### 3.5.3 PropertyTokenizer ###
+org.apache.ibatis.reflection.property.PropertyTokenizer ，实现 Iterator 接口，属性分词器，支持迭代器的访问方式。
+举个例子，在访问 "order[0].item[0].name" 时，我们希望拆分成 "order[0]"、"item[0]"、"name" 三段，那么就可以通过 PropertyTokenizer 来实现。
+
+#### 3.5.3.1 构造方法 ####
+
+````
+/**
+ * 当前字符串
+ */
+private String name;
+/**
+ * 索引的 {@link #name} ，因为 {@link #name} 如果存在 {@link #index} 会被更改
+ */
+private final String indexedName;
+/**
+ * 编号。
+ *
+ * 对于数组 name[0] ，则 index = 0
+ * 对于 Map map[key] ，则 index = key
+ */
+private String index;
+/**
+ * 剩余字符串
+ */
+private final String children;
+
+public PropertyTokenizer(String fullname) {
+    // <1> 初始化 name、children 字符串，使用 . 作为分隔
+    int delim = fullname.indexOf('.');
+    if (delim > -1) {
+        name = fullname.substring(0, delim);
+        children = fullname.substring(delim + 1);
+    } else {
+        name = fullname;
+        children = null;
+    }
+    // <2> 记录当前 name
+    indexedName = name;
+    // 若存在 [ ，则获得 index ，并修改 name 。
+    delim = name.indexOf('[');
+    if (delim > -1) {
+        index = name.substring(delim + 1, name.length() - 1);
+        name = name.substring(0, delim);
+    }
+}
+````
+
+#### 3.5.3.2 next ####
+next() 方法，迭代获得下一个 PropertyTokenizer 对象。
+
+#### 3.5.3.3 hasNext ####
+hasNext() 方法，判断是否有下一个元素。
+
+## 3.6 MetaClass ##
+org.apache.ibatis.reflection.MetaClass ，类的元数据，基于 Reflector 和 PropertyTokenizer ，提供对指定类的各种操作。
+
+### 3.6.1 构造方法 ###
+
+````
+private final ReflectorFactory reflectorFactory;
+private final Reflector reflector;
+
+private MetaClass(Class<?> type, ReflectorFactory reflectorFactory) {
+    this.reflectorFactory = reflectorFactory;
+    this.reflector = reflectorFactory.findForClass(type);
+} 
+````
+通过构造方法，我们可以看出，一个 MetaClass 对象，对应一个 Class 对象。
+
+### 3.6.2 findProperty ###
+findProperty(String name, boolean useCamelCaseMapping) 方法，根据表达式，获得属性名。
+
+主要是通过创建的MetaClass获取对应的正确属性名。
+
+### 3.6.3 hasGetter ###
+hasGetter(String name) 方法，判断指定属性是否有 getting 方法。
+
+如果name的字符串为"richType.richType.richType.richType"，则会不断的创建MetaClass，直到最后一个richType对应的MetaClass对象中的Reflector对象的hasGetter方法，并且获取"richType"对应的type。
+
+主要代码为：
+````
+private MetaClass metaClassForProperty(PropertyTokenizer prop) {
+    // 【调用】获得 getting 方法返回的类型
+    Class<?> propType = getGetterType(prop);
+    // 创建 MetaClass 对象
+    return MetaClass.forClass(propType, reflectorFactory);
+}
+
+private Class<?> getGetterType(PropertyTokenizer prop) {
+    // 获得返回类型
+    Class<?> type = reflector.getGetterType(prop.getName());
+    // 如果获取数组的某个位置的元素，则获取其泛型。例如说：list[0].field ，那么就会解析 list 是什么类型，这样才好通过该类型，继续获得 field
+    if (prop.getIndex() != null && Collection.class.isAssignableFrom(type)) {
+        // 【调用】获得返回的类型
+        Type returnType = getGenericGetterType(prop.getName());
+        // 如果是泛型，进行解析真正的类型
+        if (returnType instanceof ParameterizedType) {
+            Type[] actualTypeArguments = ((ParameterizedType) returnType).getActualTypeArguments();
+            if (actualTypeArguments != null && actualTypeArguments.length == 1) { // 为什么这里判断大小为 1 呢，因为 Collection 是 Collection<T> ，至多一个。
+                returnType = actualTypeArguments[0];
+                if (returnType instanceof Class) {
+                    type = (Class<?>) returnType;
+                } else if (returnType instanceof ParameterizedType) {
+                    type = (Class<?>) ((ParameterizedType) returnType).getRawType();
+                }
+            }
+        }
+    }
+    return type;
+}
+
+private Type getGenericGetterType(String propertyName) {
+    try {
+        // 获得 Invoker 对象
+        Invoker invoker = reflector.getGetInvoker(propertyName);
+        // 如果 MethodInvoker 对象，则说明是 getting 方法，解析方法返回类型
+        if (invoker instanceof MethodInvoker) {
+            Field _method = MethodInvoker.class.getDeclaredField("method");
+            _method.setAccessible(true);
+            Method method = (Method) _method.get(invoker);
+            return TypeParameterResolver.resolveReturnType(method, reflector.getType());
+        // 如果 GetFieldInvoker 对象，则说明是 field ，直接访问
+        } else if (invoker instanceof GetFieldInvoker) {
+            Field _field = GetFieldInvoker.class.getDeclaredField("field");
+            _field.setAccessible(true);
+            Field field = (Field) _field.get(invoker);
+            return TypeParameterResolver.resolveFieldType(field, reflector.getType());
+        }
+    } catch (NoSuchFieldException | IllegalAccessException ignored) {
+    }
+    return null;
+}
+````
+
+### 3.6.4 getGetterType ###
+getGetterType(String name) 方法，获得指定属性的 getting 方法的返回值的类型。
+
+````
+public Class<?> getGetterType(String name) {
+    // 创建 PropertyTokenizer 对象，对 name 进行分词
+    PropertyTokenizer prop = new PropertyTokenizer(name);
+    // 有子表达式
+    if (prop.hasNext()) {
+        // 创建 MetaClass 对象
+        MetaClass metaProp = metaClassForProperty(prop);
+        // 递归判断子表达式 children ，获得返回值的类型
+        return metaProp.getGetterType(prop.getChildren());
+    }
+    // 直接获得返回值的类型
+    return getGetterType(prop);
+}
+````
+
+例如：返回的field类型为String，则返回的类型为String.class
+
+## 3.7 ObjectWrapper ##
+org.apache.ibatis.reflection.wrapper.ObjectWrapper ，对象包装器接口，基于 MetaClass 工具类，定义对指定对象的各种操作。或者可以说，ObjectWrapper 是 MetaClass 的指定类的具象化。
+
+主要是对 MetaObject 方法的调用
+
+### 3.7.1 BaseWrapper ###
+org.apache.ibatis.reflection.wrapper.BaseWrapper ，实现 ObjectWrapper 接口，ObjectWrapper 抽象类，为子类 BeanWrapper 和 MapWrapper 提供属性值的获取和设置的公用方法。
+
+主要的函数为：
+
+````
+public abstract class BaseWrapper implements ObjectWrapper {
+
+    protected static final Object[] NO_ARGUMENTS = new Object[0];
+
+    /**
+     * MetaObject 对象
+     */
+    protected final MetaObject metaObject;
+
+    protected BaseWrapper(MetaObject metaObject) {
+        this.metaObject = metaObject;
+    }
+
+    /**
+     * 获得指定属性的值
+     * @param prop PropertyTokenizer 对象
+     * @param object 指定 Object 对象
+     * @return 值
+     */
+    protected Object resolveCollection(PropertyTokenizer prop, Object object) {
+        if ("".equals(prop.getName())) {
+            return object;
+        } else {
+            return metaObject.getValue(prop.getName());
+        }
+    }
+
+    /**
+     * 获得集合中指定位置的值
+     * @param prop PropertyTokenizer 对象
+     * @param collection 集合
+     * @return 值
+     */
+    protected Object getCollectionValue(PropertyTokenizer prop, Object collection) {
+        if (collection instanceof Map) {
+            return ((Map) collection).get(prop.getIndex());
+        } else {
+            int i = Integer.parseInt(prop.getIndex());
+            if (collection instanceof List) {
+                return ((List) collection).get(i);
+            } else if (collection instanceof Object[]) {
+                return ((Object[]) collection)[i];
+            } else if (collection instanceof char[]) {
+                return ((char[]) collection)[i];
+            } else if (collection instanceof boolean[]) {
+                return ((boolean[]) collection)[i];
+            } else if (collection instanceof byte[]) {
+                return ((byte[]) collection)[i];
+            } else if (collection instanceof double[]) {
+                return ((double[]) collection)[i];
+            } else if (collection instanceof float[]) {
+                return ((float[]) collection)[i];
+            } else if (collection instanceof int[]) {
+                return ((int[]) collection)[i];
+            } else if (collection instanceof long[]) {
+                return ((long[]) collection)[i];
+            } else if (collection instanceof short[]) {
+                return ((short[]) collection)[i];
+            } else {
+                throw new ReflectionException("The '" + prop.getName() + "' property of " + collection + " is not a List or Array.");
+            }
+        }
+    }
+
+    /**
+     * 设置集合中指定位置的值
+     * @param prop PropertyTokenizer 对象
+     * @param collection 集合
+     * @param value 值
+     */
+    protected void setCollectionValue(PropertyTokenizer prop, Object collection, Object value) {
+        if (collection instanceof Map) {
+            ((Map) collection).put(prop.getIndex(), value);
+        } else {
+            int i = Integer.parseInt(prop.getIndex());
+            if (collection instanceof List) {
+                ((List) collection).set(i, value);
+            } else if (collection instanceof Object[]) {
+                ((Object[]) collection)[i] = value;
+            } else if (collection instanceof char[]) {
+                ((char[]) collection)[i] = (Character) value;
+            } else if (collection instanceof boolean[]) {
+                ((boolean[]) collection)[i] = (Boolean) value;
+            } else if (collection instanceof byte[]) {
+                ((byte[]) collection)[i] = (Byte) value;
+            } else if (collection instanceof double[]) {
+                ((double[]) collection)[i] = (Double) value;
+            } else if (collection instanceof float[]) {
+                ((float[]) collection)[i] = (Float) value;
+            } else if (collection instanceof int[]) {
+                ((int[]) collection)[i] = (Integer) value;
+            } else if (collection instanceof long[]) {
+                ((long[]) collection)[i] = (Long) value;
+            } else if (collection instanceof short[]) {
+                ((short[]) collection)[i] = (Short) value;
+            } else {
+                throw new ReflectionException("The '" + prop.getName() + "' property of " + collection + " is not a List or Array.");
+            }
+        }
+    }
+}
+````
+
+#### 3.7.1.1 BeanWrapper ####
+org.apache.ibatis.reflection.wrapper.BeanWrapper ，继承 BaseWrapper 抽象类，普通对象的 ObjectWrapper 实现类，例如 User、Order 这样的 POJO 类。
+
+````
+/**
+ * 普通对象
+ */
+private final Object object;
+private final MetaClass metaClass;
+
+public BeanWrapper(MetaObject metaObject, Object object) {
+    super(metaObject);
+    this.object = object;
+    // 创建 MetaClass 对象
+    this.metaClass = MetaClass.forClass(object.getClass(), metaObject.getReflectorFactory());
+}
+````
+
+##### 3.7.1.1.1 get #####
+get(PropertyTokenizer prop) 方法，获得指定属性的值。
+
+例如：
+````
+ meta.getValue("richList[0]")
+````
+
+````
+@Override
+public Object get(PropertyTokenizer prop) {
+    // <1> 获得集合类型的属性的指定位置的值。例如说：User 对象的 list[0] 。所调用的方法，都是 BaseWrapper 所提供的公用方法。
+    if (prop.getIndex() != null) {
+        // 获得集合类型的属性
+        Object collection = resolveCollection(prop, object);
+        // 获得指定位置的值
+        return getCollectionValue(prop, collection);
+    // <2> 调用 #getBeanProperty(PropertyTokenizer prop, Object object) 方法，获得属性的值。
+    } else {
+        return getBeanProperty(prop, object);
+    }
+}
+````
+
+通过调用 Invoker 方法，获得属性的值。
+````
+private Object getBeanProperty(PropertyTokenizer prop, Object object) {
+    try {
+        Invoker method = metaClass.getGetInvoker(prop.getName());
+        try {
+            return method.invoke(object, NO_ARGUMENTS);
+        } catch (Throwable t) {
+            throw ExceptionUtil.unwrapThrowable(t);
+        }
+    } catch (RuntimeException e) {
+        throw e;
+    } catch (Throwable t) {
+        throw new ReflectionException("Could not get property '" + prop.getName() + "' from " + object.getClass() + ".  Cause: " + t.toString(), t);
+    }
+}
+````
+
+##### 3.7.1.1.2 set #####
+set(PropertyTokenizer prop, Object value) 方法，设置指定属性的值。
+
+例如：
+````
+meta.setValue("richList[0]", "foo");
+````
+
+````
+@Override
+public void set(PropertyTokenizer prop, Object value) {
+    // 设置集合类型的属性的指定位置的值
+    if (prop.getIndex() != null) {
+        // 获得集合类型的属性
+        Object collection = resolveCollection(prop, object);
+        // 设置指定位置的值
+        setCollectionValue(prop, collection, value);
+    // 设置属性的值
+    } else {
+        setBeanProperty(prop, object, value);
+    }
+}
+
+private void setBeanProperty(PropertyTokenizer prop, Object object, Object value) {
+    try {
+        Invoker method = metaClass.getSetInvoker(prop.getName());
+        Object[] params = {value};
+        try {
+            method.invoke(object, params);
+        } catch (Throwable t) {
+            throw ExceptionUtil.unwrapThrowable(t);
+        }
+    } catch (Throwable t) {
+        throw new ReflectionException("Could not set property '" + prop.getName() + "' of '" + object.getClass() + "' with value '" + value + "' Cause: " + t.toString(), t);
+    }
+}
+````
+
+##### 3.7.1.1.3 getGetterType #####
+getGetterType(String name) 方法，获得指定属性的 getting 方法的返回值 type。
+
+大体过程和MetaClass 的 #getGetterType(String name) 方法是一致的。
+````
+@Override
+public Class<?> getGetterType(String name) {
+    // 创建 PropertyTokenizer 对象，对 name 进行分词
+    PropertyTokenizer prop = new PropertyTokenizer(name);
+    // 有子表达式
+    if (prop.hasNext()) {
+        // <1> 创建 MetaObject 对象
+        MetaObject metaValue = metaObject.metaObjectForProperty(prop.getIndexedName());
+        // 如果 metaValue 为空，则基于 metaClass 获得返回类型
+        if (metaValue == SystemMetaObject.NULL_META_OBJECT) {
+            return metaClass.getGetterType(name);
+        // 如果 metaValue 非空，则基于 metaValue 获得返回类型。
+        // 例如：richType.richMap.nihao ，其中 richMap 是 Map 类型，而 nihao 的类型，需要获得到 nihao 的具体值，才能做真正的判断。
+        } else {
+            // 递归判断子表达式 children ，获得返回值的类型
+            return metaValue.getGetterType(prop.getChildren());
+        }
+    // 有子表达式
+    } else {
+        // 直接获得返回值的类型
+        return metaClass.getGetterType(name);
+    }
+}
+````
+
+##### 3.7.1.1.4 hasGetter #####
+hasGetter(String name) 方法，是否有指定属性的 getting 方法。
+
+例如
+````
+meta.hasGetter("richType")
+````
+
+````
+@Override
+public boolean hasGetter(String name) {
+    // 创建 PropertyTokenizer 对象，对 name 进行分词
+    PropertyTokenizer prop = new PropertyTokenizer(name);
+    // 有子表达式
+    if (prop.hasNext()) {
+        // 判断是否有该属性的 getting 方法
+        if (metaClass.hasGetter(prop.getIndexedName())) {
+            // 创建 MetaObject 对象
+            MetaObject metaValue = metaObject.metaObjectForProperty(prop.getIndexedName());
+            // 如果 metaValue 为空，则基于 metaClass 判断是否有该属性的 getting 方法
+            if (metaValue == SystemMetaObject.NULL_META_OBJECT) {
+                return metaClass.hasGetter(name);
+            // 如果 metaValue 非空，则基于 metaValue 判断是否有 getting 方法。
+            } else {
+                // 递归判断子表达式 children ，判断是否有 getting 方法
+                return metaValue.hasGetter(prop.getChildren());
+            }
+        } else {
+            return false;
+        }
+    // 有子表达式
+    } else {
+        // 判断是否有该属性的 getting 方法
+        return metaClass.hasGetter(name);
+    }
+}
+````
+
+##### 3.7.1.1.5 instantiatePropertyValue #####
+instantiatePropertyValue(String name, PropertyTokenizer prop, ObjectFactory objectFactory) 方法，创建指定属性的值。
+
+````
+@Override
+public MetaObject instantiatePropertyValue(String name, PropertyTokenizer prop, ObjectFactory objectFactory) {
+    MetaObject metaValue;
+    // 获得 setting 方法的方法参数类型
+    Class<?> type = getSetterType(prop.getName());
+    try {
+        // 创建对象
+        Object newObject = objectFactory.create(type);
+        // 创建 MetaObject 对象
+        metaValue = MetaObject.forObject(newObject, metaObject.getObjectFactory(), metaObject.getObjectWrapperFactory(), metaObject.getReflectorFactory());
+        // <1> 设置当前对象的值
+        set(prop, newObject);
+    } catch (Exception e) {
+        throw new ReflectionException("Cannot set value of property '" + name + "' because '" + name + "' is null and cannot be instantiated on instance of " + type.getName() + ". Cause:" + e.toString(), e);
+    }
+    return metaValue;
+}
+````
 ----

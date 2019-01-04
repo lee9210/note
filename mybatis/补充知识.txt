@@ -1,0 +1,1 @@
+反射模块中，生成的Reflector对象，如果一个field的类型为boolean，并且有两个两个获取方法，一个是get，一个是is，则会用is的方法代替get方法。如果不是boolean类型的，则会报错。
