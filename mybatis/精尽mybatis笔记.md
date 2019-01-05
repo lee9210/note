@@ -1824,7 +1824,795 @@ JNDI – 这个数据源的实现是为了能在如 EJB 或应用服务器这类
 env.encoding=UTF8
 这就会在初始上下文（InitialContext）实例化时往它的构造方法传递值为 UTF8 的 encoding 属性。
 
+#### 5.1.3.1 构造方法 ####
+不同于 UnpooledDataSourceFactory 和 PooledDataSourceFactory ，dataSource 不在构造方法中创建，而是在 #setProperties(Properties properties) 中。
+
+#### 5.1.3.2 getDataSource ####
+getDataSource() 方法，返回 DataSource 对象。
+
+#### 5.1.3.3 setProperties ####
+
+setProperties(Properties properties) 方法，从上下文中，获得 DataSource 对象。
+
+````
+public static final String INITIAL_CONTEXT = "initial_context";
+public static final String DATA_SOURCE = "data_source";
+public static final String ENV_PREFIX = "env.";
+
+@Override
+public void setProperties(Properties properties) {
+    try {
+        InitialContext initCtx;
+        // <1> 获得系统 Properties 对象
+        Properties env = getEnvProperties(properties);
+        // 创建 InitialContext 对象
+        if (env == null) {
+            initCtx = new InitialContext();
+        } else {
+            initCtx = new InitialContext(env);
+        }
+
+        // 从 InitialContext 上下文中，获取 DataSource 对象
+        if (properties.containsKey(INITIAL_CONTEXT)
+                && properties.containsKey(DATA_SOURCE)) {
+            Context ctx = (Context) initCtx.lookup(properties.getProperty(INITIAL_CONTEXT));
+            dataSource = (DataSource) ctx.lookup(properties.getProperty(DATA_SOURCE));
+        } else if (properties.containsKey(DATA_SOURCE)) {
+            dataSource = (DataSource) initCtx.lookup(properties.getProperty(DATA_SOURCE));
+        }
+    } catch (NamingException e) {
+        throw new DataSourceException("There was an error configuring JndiDataSourceTransactionPool. Cause: " + e, e);
+    }
+}
+````
+
+## 5.2 DataSource ##
+javax.sql.DataSource ，在其上可以衍生出数据连接池、分库分表、读写分离等等功能。
+
+### 5.2.1 UnpooledDataSource ###
+org.apache.ibatis.datasource.unpooled.UnpooledDataSource ，实现 DataSource 接口，非池化的 DataSource 对象。
+
+#### 5.2.1.1 构造方法 ####
+
+主要对属性赋值。
+
+主要有这些属性：
+````
+/** Driver 类加载器 */
+private ClassLoader driverClassLoader;
+/** Driver 属性 */
+private Properties driverProperties;
+/** Driver 类名 */
+private String driver;
+/** 数据库 URL */
+private String url;
+/** 数据库用户名 */
+private String username;
+/** 数据库密码 */
+private String password;
+/** 是否自动提交事务 */
+private Boolean autoCommit;
+/** 默认事务隔离级别 */
+private Integer defaultTransactionIsolationLevel;
+````
+
+#### 5.2.1.2 getConnection ####
+getConnection(...) 方法，获得 Connection 连接。
+
+````
+@Override
+public Connection getConnection() throws SQLException {
+    return doGetConnection(username, password);
+}
+
+@Override
+public Connection getConnection(String username, String password) throws SQLException {
+    return doGetConnection(username, password);
+}
+````
+都是调用 #doGetConnection(String username, String password) 方法，获取 Connection 连接
+
+````
+private Connection doGetConnection(String username, String password) throws SQLException {
+    // 创建 Properties 对象
+    Properties props = new Properties();
+    // 设置 driverProperties 到 props 中
+    if (driverProperties != null) {
+        props.putAll(driverProperties);
+    }
+    // 设置 user 和 password 到 props 中
+    if (username != null) {
+        props.setProperty("user", username);
+    }
+    if (password != null) {
+        props.setProperty("password", password);
+    }
+    // 执行获得 Connection 连接
+    return doGetConnection(props);
+}
+
+private Connection doGetConnection(Properties properties) throws SQLException {
+    // 调用 #initializeDriver() 方法，初始化 Driver 。
+    initializeDriver();
+    // 调用 java.sql.DriverManager#getConnection(String url, Properties info) 方法，获得 Connection 对象。
+    Connection connection = DriverManager.getConnection(url, properties);
+    // 调用 #configureConnection(Connection conn) 方法，配置 Connection 对象。
+    configureConnection(connection);
+    return connection;
+}
+````
+
+##### 5.2.1.2.1 initializeDriver #####
+initializeDriver() 方法，初始化 Driver 。
+
+````
+private synchronized void initializeDriver() throws SQLException { // synchronized 锁的粒度太大，可以减小到基于 registeredDrivers 来同步，并且很多时候，不需要加锁。
+    // 判断 registeredDrivers 是否已经存在该 driver ，若不存在，进行初始化
+    if (!registeredDrivers.containsKey(driver)) {
+        Class<?> driverType;
+        try {
+            // 获得 driver 类，实际上，就是我们常见的 "Class.forName("com.mysql.jdbc.Driver")" 。
+            if (driverClassLoader != null) {
+                driverType = Class.forName(driver, true, driverClassLoader);
+            } else {
+                driverType = Resources.classForName(driver);
+            }
+            // 创建 Driver 对象，并注册到 DriverManager 中，以及添加到 registeredDrivers 中。
+            Driver driverInstance = (Driver) driverType.newInstance();
+            // 创建 DriverProxy 对象，并注册到 DriverManager 中
+            DriverManager.registerDriver(new DriverProxy(driverInstance));
+            // 添加到 registeredDrivers 中
+            registeredDrivers.put(driver, driverInstance);
+        } catch (Exception e) {
+            throw new SQLException("Error setting driver on UnpooledDataSource. Cause: " + e);
+        }
+    }
+}
+````
+
+##### 5.2.1.2.2 configureConnection #####
+configureConnection(Connection conn) 方法，配置 Connection 对象。
+
+````
+private void configureConnection(Connection conn) throws SQLException {
+    // 设置自动提交
+    if (autoCommit != null && autoCommit != conn.getAutoCommit()) {
+        conn.setAutoCommit(autoCommit);
+    }
+    // 设置事务隔离级别
+    if (defaultTransactionIsolationLevel != null) {
+        conn.setTransactionIsolation(defaultTransactionIsolationLevel);
+    }
+}
+````
+
+### 5.2.2 PooledDataSource ###
+org.apache.ibatis.datasource.pooled.PooledDataSource ，实现 DataSource 接口，池化的 DataSource 实现类。
+
+- 实际场景下，我们基本不用 MyBatis 自带的数据库连接池的实现。
+
+#### 5.2.2.1 构造方法 ####
+````
+/**
+ * PoolState 对象，记录池化的状态
+ */
+private final PoolState state = new PoolState(this);
+
+/**
+ * UnpooledDataSource 对象
+ */
+private final UnpooledDataSource dataSource;
+
+// OPTIONAL CONFIGURATION FIELDS
+/**
+ * 在任意时间可以存在的活动（也就是正在使用）连接数量
+ */
+protected int poolMaximumActiveConnections = 10;
+/**
+ * 任意时间可能存在的空闲连接数
+ */
+protected int poolMaximumIdleConnections = 5;
+/**
+ * 在被强制返回之前，池中连接被检出（checked out）时间。单位：毫秒
+ */
+protected int poolMaximumCheckoutTime = 20000;
+/**
+ * 这是一个底层设置，如果获取连接花费了相当长的时间，连接池会打印状态日志并重新尝试获取一个连接（避免在误配置的情况下一直安静的失败）。单位：毫秒
+ */
+protected int poolTimeToWait = 20000;
+/**
+ * 这是一个关于坏连接容忍度的底层设置，作用于每一个尝试从缓存池获取连接的线程. 如果这个线程获取到的是一个坏的连接，那么这个数据源允许这个线程尝试重新获取一个新的连接，但是这个重新尝试的次数不应该超过 poolMaximumIdleConnections 与 poolMaximumLocalBadConnectionTolerance 之和。
+ */
+protected int poolMaximumLocalBadConnectionTolerance = 3;
+/**
+ * 发送到数据库的侦测查询，用来检验连接是否正常工作并准备接受请求。
+ */
+protected String poolPingQuery = "NO PING QUERY SET";
+/**
+ * 是否启用侦测查询。若开启，需要设置 poolPingQuery 属性为一个可执行的 SQL 语句（最好是一个速度非常快的 SQL 语句）
+ */
+protected boolean poolPingEnabled;
+/**
+ * 配置 poolPingQuery 的频率。可以被设置为和数据库连接超时时间一样，来避免不必要的侦测，默认值：0（即所有连接每一时刻都被侦测 — 当然仅当 poolPingEnabled 为 true 时适用）
+ */
+protected int poolPingConnectionsNotUsedFor;
+
+/**
+ * 期望 Connection 的类型编码，通过 {@link #assembleConnectionTypeCode(String, String, String)} 计算。
+ */
+private int expectedConnectionTypeCode;
+
+public PooledDataSource() {
+    dataSource = new UnpooledDataSource();
+}
+
+public PooledDataSource(UnpooledDataSource dataSource) {
+    this.dataSource = dataSource;
+}
+
+public PooledDataSource(String driver, String url, String username, String password) {
+    dataSource = new UnpooledDataSource(driver, url, username, password);
+    expectedConnectionTypeCode = assembleConnectionTypeCode(dataSource.getUrl(), dataSource.getUsername(), dataSource.getPassword());
+}
+
+public PooledDataSource(String driver, String url, Properties driverProperties) {
+    dataSource = new UnpooledDataSource(driver, url, driverProperties);
+    expectedConnectionTypeCode = assembleConnectionTypeCode(dataSource.getUrl(), dataSource.getUsername(), dataSource.getPassword());
+}
+
+public PooledDataSource(ClassLoader driverClassLoader, String driver, String url, String username, String password) {
+    dataSource = new UnpooledDataSource(driverClassLoader, driver, url, username, password);
+    expectedConnectionTypeCode = assembleConnectionTypeCode(dataSource.getUrl(), dataSource.getUsername(), dataSource.getPassword());
+}
+
+public PooledDataSource(ClassLoader driverClassLoader, String driver, String url, Properties driverProperties) {
+    // 创建 UnpooledDataSource 对象
+    dataSource = new UnpooledDataSource(driverClassLoader, driver, url, driverProperties);
+    // 计算  expectedConnectionTypeCode 的值
+    expectedConnectionTypeCode = assembleConnectionTypeCode(dataSource.getUrl(), dataSource.getUsername(), dataSource.getPassword());
+}
+````
+
+#### 5.2.2.2 getConnection ####
+
+getConnection(...) 方法，获得 Connection 连接。
+
+````
+
+/**
+ * 调用 #popConnection(String username, String password) 方法，获取 org.apache.ibatis.datasource.pooled.PooledConnection 对象，这是一个池化的连接。
+ */
+@Override
+public Connection getConnection() throws SQLException {
+    return popConnection(dataSource.getUsername(), dataSource.getPassword()).getProxyConnection();
+}
+
+/**
+ * 调用 PooledConnection#getProxyConnection() 方法，返回代理的 Connection 对象。这样，每次对数据库的操作，才能被 PooledConnection 的  invoke 代理拦截。
+ */
+@Override
+public Connection getConnection(String username, String password) throws SQLException {
+    return popConnection(username, password).getProxyConnection();
+}
+````
+
+##### 5.2.2.2.1 popConnection #####
+popConnection(String username, String password) 方法，获取 PooledConnection 对象。
+
+整体流程如下：
+
+![](/picture/mybatis-pool-popConnection.png)
 
 
+具体代码为：
+````
+private PooledConnection popConnection(String username, String password) throws SQLException {
+    boolean countedWait = false; // 标记，获取连接时，是否进行了等待
+    PooledConnection conn = null; // 最终获取到的链接对象
+    long t = System.currentTimeMillis(); // 记录当前时间
+    int localBadConnectionCount = 0; // 记录当前方法，获取到坏连接的次数
+
+    // 循环，获取可用的 Connection 连接
+    while (conn == null) {
+        synchronized (state) {
+            // 空闲连接非空
+            if (!state.idleConnections.isEmpty()) {
+                // Pool has available connection
+                // 通过移除的方式，获得首个空闲的连接
+                conn = state.idleConnections.remove(0);
+                if (log.isDebugEnabled()) {
+                    log.debug("Checked out connection " + conn.getRealHashCode() + " from pool.");
+                }
+            // 无空闲空闲连接
+            } else {
+                // Pool does not have available connection
+                // 激活的连接数小于 poolMaximumActiveConnections
+                if (state.activeConnections.size() < poolMaximumActiveConnections) {
+                    // Can create new connection
+                    // 创建新的 PooledConnection 连接对象
+                    conn = new PooledConnection(dataSource.getConnection(), this);
+                    if (log.isDebugEnabled()) {
+                        log.debug("Created connection " + conn.getRealHashCode() + ".");
+                    }
+                } else {
+                    // Cannot create new connection
+                    // 获得首个激活的 PooledConnection 对象
+                    PooledConnection oldestActiveConnection = state.activeConnections.get(0);
+                    // 检查该连接是否超时
+                    long longestCheckoutTime = oldestActiveConnection.getCheckoutTime();
+                    if (longestCheckoutTime > poolMaximumCheckoutTime) { // 检查到超时
+                        // Can claim overdue connection
+                        // 对连接超时的时间的统计
+                        state.claimedOverdueConnectionCount++;
+                        state.accumulatedCheckoutTimeOfOverdueConnections += longestCheckoutTime;
+                        state.accumulatedCheckoutTime += longestCheckoutTime;
+                        // 从活跃的连接集合中移除
+                        state.activeConnections.remove(oldestActiveConnection);
+                        // 如果非自动提交的，需要进行回滚。即将原有执行中的事务，全部回滚。
+                        if (!oldestActiveConnection.getRealConnection().getAutoCommit()) {
+                            try {
+                                oldestActiveConnection.getRealConnection().rollback();
+                            } catch (SQLException e) {
+                                /*
+                                   Just log a message for debug and continue to execute the following
+                                   statement like nothing happened.
+                                   Wrap the bad connection with a new PooledConnection, this will help
+                                   to not interrupt current executing thread and give current thread a
+                                   chance to join the next competition for another valid/good database
+                                   connection. At the end of this loop, bad {@link @conn} will be set as null.
+                                */
+                                log.debug("Bad connection. Could not roll back");
+                            }
+                        }
+                        // 创建新的 PooledConnection 连接对象
+                        conn = new PooledConnection(oldestActiveConnection.getRealConnection(), this);
+                        conn.setCreatedTimestamp(oldestActiveConnection.getCreatedTimestamp());
+                        conn.setLastUsedTimestamp(oldestActiveConnection.getLastUsedTimestamp());
+                        // 设置 oldestActiveConnection 为无效
+                        oldestActiveConnection.invalidate();
+                        if (log.isDebugEnabled()) {
+                            log.debug("Claimed overdue connection " + conn.getRealHashCode() + ".");
+                        }
+                    } else { // 检查到未超时
+                        // Must wait
+                        try {
+                            // 对等待连接进行统计。通过 countedWait 标识，在这个循环中，只记录一次。
+                            if (!countedWait) {
+                                state.hadToWaitCount++;
+                                countedWait = true;
+                            }
+                            if (log.isDebugEnabled()) {
+                                log.debug("Waiting as long as " + poolTimeToWait + " milliseconds for connection.");
+                            }
+                            // 记录当前时间
+                            long wt = System.currentTimeMillis();
+                            // 等待，直到超时，或 pingConnection 方法中归还连接时的唤醒
+                            state.wait(poolTimeToWait);
+                            // 统计等待连接的时间
+                            state.accumulatedWaitTime += System.currentTimeMillis() - wt;
+                        } catch (InterruptedException e) {
+                            break;
+                        }
+                    }
+                }
+            }
+            // 获取到连接
+            if (conn != null) {
+                // ping to server and check the connection is valid or not
+                // 通过 ping 来测试连接是否有效
+                if (conn.isValid()) {
+                    // 如果非自动提交的，需要进行回滚。即将原有执行中的事务，全部回滚。
+                    // 这里又执行了一次，有点奇怪。目前猜测，是不是担心上一次适用方忘记提交或回滚事务 TODO 1001 芋艿
+                    if (!conn.getRealConnection().getAutoCommit()) {
+                        conn.getRealConnection().rollback();
+                    }
+                    // 设置获取连接的属性
+                    conn.setConnectionTypeCode(assembleConnectionTypeCode(dataSource.getUrl(), username, password));
+                    conn.setCheckoutTimestamp(System.currentTimeMillis());
+                    conn.setLastUsedTimestamp(System.currentTimeMillis());
+                    // 添加到活跃的连接集合
+                    state.activeConnections.add(conn);
+                    // 对获取成功连接的统计
+                    state.requestCount++;
+                    state.accumulatedRequestTime += System.currentTimeMillis() - t;
+                } else {
+                    if (log.isDebugEnabled()) {
+                        log.debug("A bad connection (" + conn.getRealHashCode() + ") was returned from the pool, getting another connection.");
+                    }
+                    // 统计获取到坏的连接的次数
+                    state.badConnectionCount++;
+                    // 记录获取到坏的连接的次数【本方法】
+                    localBadConnectionCount++;
+                    // 将 conn 置空，那么可以继续获取
+                    conn = null;
+                    // 如果超过最大次数，抛出 SQLException 异常
+                    // 为什么次数要包含 poolMaximumIdleConnections 呢？相当于把激活的连接，全部遍历一次。
+                    if (localBadConnectionCount > (poolMaximumIdleConnections + poolMaximumLocalBadConnectionTolerance)) {
+                        if (log.isDebugEnabled()) {
+                            log.debug("PooledDataSource: Could not get a good connection to the database.");
+                        }
+                        throw new SQLException("PooledDataSource: Could not get a good connection to the database.");
+                    }
+                }
+            }
+        }
+    }
+
+    // 获取不到连接，抛出 SQLException 异常
+    if (conn == null) {
+        if (log.isDebugEnabled()) {
+            log.debug("PooledDataSource: Unknown severe error condition.  The connection pool returned a null connection.");
+        }
+        throw new SQLException("PooledDataSource: Unknown severe error condition.  The connection pool returned a null connection.");
+    }
+
+    return conn;
+}
+````
+
+#### 5.2.2.3 pushConnection ####
+pushConnection(PooledConnection conn) 方法，将使用完的连接，添加回连接池中。
+
+整体流程如下图：
+
+![](/picture/mybatis-pool-pushConnection.png)
+
+代码如下：
+
+````
+protected void pushConnection(PooledConnection conn) throws SQLException {
+    synchronized (state) {
+        // 从激活的连接集合中移除该连接
+        state.activeConnections.remove(conn);
+        // 通过 ping 来测试连接是否有效
+        if (conn.isValid()) { // 有效
+            // 判断是否超过空闲连接上限，并且和当前连接池的标识匹配
+            if (state.idleConnections.size() < poolMaximumIdleConnections && conn.getConnectionTypeCode() == expectedConnectionTypeCode) {
+                // 统计连接使用时长
+                state.accumulatedCheckoutTime += conn.getCheckoutTime();
+                // 回滚事务，避免适用房未提交或者回滚事务
+                if (!conn.getRealConnection().getAutoCommit()) {
+                    conn.getRealConnection().rollback();
+                }
+                // 创建 PooledConnection 对象，并添加到空闲的链接集合中
+                PooledConnection newConn = new PooledConnection(conn.getRealConnection(), this);
+                state.idleConnections.add(newConn);
+                newConn.setCreatedTimestamp(conn.getCreatedTimestamp());
+                newConn.setLastUsedTimestamp(conn.getLastUsedTimestamp());
+                // 设置原连接失效
+                // 为什么这里要创建新的 PooledConnection 对象呢？避免使用方还在使用 conn ，通过将它设置为失效，万一再次调用，会抛出异常
+                conn.invalidate();
+                if (log.isDebugEnabled()) {
+                    log.debug("Returned connection " + newConn.getRealHashCode() + " to pool.");
+                }
+                // 唤醒正在等待连接的线程
+                state.notifyAll();
+            } else {
+                // 统计连接使用时长
+                state.accumulatedCheckoutTime += conn.getCheckoutTime();
+                // 回滚事务，避免适用房未提交或者回滚事务
+                if (!conn.getRealConnection().getAutoCommit()) {
+                    conn.getRealConnection().rollback();
+                }
+                // 关闭真正的数据库连接
+                conn.getRealConnection().close();
+                if (log.isDebugEnabled()) {
+                    log.debug("Closed connection " + conn.getRealHashCode() + ".");
+                }
+                // 设置原连接失效
+                conn.invalidate();
+            }
+        } else { // 失效
+            if (log.isDebugEnabled()) {
+                log.debug("A bad connection (" + conn.getRealHashCode() + ") attempted to return to the pool, discarding connection.");
+            }
+            // 统计获取到坏的连接的次数
+            state.badConnectionCount++;
+        }
+    }
+}
+````
+该方法会被 PooledConnection 的 invoke 在 methodName = close 方法的情况下时被调用。
+
+#### 5.2.2.4 pingConnection ####
+pingConnection(PooledConnection conn) 方法，通过向数据库发起 poolPingQuery 语句来发起“ping”操作，以判断数据库连接是否有效。
+
+````
+protected boolean pingConnection(PooledConnection conn) {
+    // 记录是否 ping 成功
+    boolean result;
+
+    // 判断真实的连接是否已经关闭。若已关闭，就意味着 ping 肯定是失败的。
+    try {
+        result = !conn.getRealConnection().isClosed();
+    } catch (SQLException e) {
+        if (log.isDebugEnabled()) {
+            log.debug("Connection " + conn.getRealHashCode() + " is BAD: " + e.getMessage());
+        }
+        result = false;
+    }
+
+    if (result) {
+        // 是否启用侦测查询
+        if (poolPingEnabled) {
+            // 判断是否长时间未使用。若是，才需要发起 ping
+            if (poolPingConnectionsNotUsedFor >= 0 && conn.getTimeElapsedSinceLastUse() > poolPingConnectionsNotUsedFor) {
+                try {
+                    if (log.isDebugEnabled()) {
+                        log.debug("Testing connection " + conn.getRealHashCode() + " ...");
+                    }
+                    // 通过执行 poolPingQuery 语句来发起 ping
+                    Connection realConn = conn.getRealConnection();
+                    try (Statement statement = realConn.createStatement()) {
+                        statement.executeQuery(poolPingQuery).close();
+                    }
+                    if (!realConn.getAutoCommit()) {
+                        realConn.rollback();
+                    }
+                    // 标记执行成功
+                    result = true;
+                    if (log.isDebugEnabled()) {
+                        log.debug("Connection " + conn.getRealHashCode() + " is GOOD!");
+                    }
+                } catch (Exception e) {
+                    // 关闭数据库真实的连接
+                    log.warn("Execution of ping query '" + poolPingQuery + "' failed: " + e.getMessage());
+                    try {
+                        conn.getRealConnection().close();
+                    } catch (Exception e2) {
+                        //ignore
+                    }
+                    // 标记执行失败
+                    result = false;
+                    if (log.isDebugEnabled()) {
+                        log.debug("Connection " + conn.getRealHashCode() + " is BAD: " + e.getMessage());
+                    }
+                }
+            }
+        }
+    }
+    return result;
+}
+````
+
+#### 5.2.2.5 forceCloseAll ####
+forceCloseAll() 方法，关闭所有的 activeConnections 和 idleConnections 的连接。
+
+````
+public void forceCloseAll() {
+    synchronized (state) {
+        // 计算 expectedConnectionTypeCode
+        expectedConnectionTypeCode = assembleConnectionTypeCode(dataSource.getUrl(), dataSource.getUsername(), dataSource.getPassword());
+        // 遍历 activeConnections ，进行关闭
+        for (int i = state.activeConnections.size(); i > 0; i--) {
+            try {
+                // 设置为失效
+                PooledConnection conn = state.activeConnections.remove(i - 1);
+                conn.invalidate();
+
+                // 回滚事务，如果有事务未提交或回滚
+                Connection realConn = conn.getRealConnection();
+                if (!realConn.getAutoCommit()) {
+                    realConn.rollback();
+                }
+                // 关闭真实的连接
+                realConn.close();
+            } catch (Exception e) {
+                // ignore
+            }
+        }
+        // 遍历 idleConnections ，进行关闭
+        //【实现代码上，和上面是一样的】
+        for (int i = state.idleConnections.size(); i > 0; i--) {
+            try {
+                // 设置为失效
+                PooledConnection conn = state.idleConnections.remove(i - 1);
+                conn.invalidate();
+
+                // 回滚事务，如果有事务未提交或回滚
+                Connection realConn = conn.getRealConnection();
+                if (!realConn.getAutoCommit()) {
+                    realConn.rollback();
+                }
+                // 关闭真实的连接
+                realConn.close();
+            } catch (Exception e) {
+                // ignore
+            }
+        }
+    }
+    if (log.isDebugEnabled()) {
+        log.debug("PooledDataSource forcefully closed/removed all connections.");
+    }
+}
+````
+
+#### 5.2.2.6 unwrapConnection ####
+unwrapConnection(Connection conn) 方法，获取真实的数据库连接。
+
+````
+public static Connection unwrapConnection(Connection conn) {
+    // 如果传入的是被代理的连接
+    if (Proxy.isProxyClass(conn.getClass())) {
+        // 获取 InvocationHandler 对象
+        InvocationHandler handler = Proxy.getInvocationHandler(conn);
+        // 如果是 PooledConnection 对象，则获取真实的连接
+        if (handler instanceof PooledConnection) {
+            return ((PooledConnection) handler).getRealConnection();
+        }
+    }
+    return conn;
+}
+````
+
+## 5.3 PoolState ##
+
+org.apache.ibatis.datasource.pooled.PoolState ，连接池状态，记录空闲和激活的 PooledConnection 集合，以及相关的数据统计。
+
+主要的属性有：
+
+````
+/**
+ * 所属的 PooledDataSource 对象
+ */
+protected PooledDataSource dataSource;
+
+/**
+ * 空闲的 PooledConnection 集合
+ */
+protected final List<PooledConnection> idleConnections = new ArrayList<>();
+/**
+ * 激活的的 PooledConnection 集合
+ */
+protected final List<PooledConnection> activeConnections = new ArrayList<>();
+
+/**
+ * 全局统计 - 获取连接的次数
+ */
+protected long requestCount = 0;
+/**
+ * 全局统计 - 获取连接的时间
+ */
+protected long accumulatedRequestTime = 0;
+/**
+ * 全局统计 - 获取到连接非超时 + 超时的占用时长
+ *
+ * 所以，包括 {@link #accumulatedCheckoutTimeOfOverdueConnections} 部分
+ */
+protected long accumulatedCheckoutTime = 0;
+/**
+ * 全局统计 - 获取到连接超时的次数
+ */
+protected long claimedOverdueConnectionCount = 0;
+/**
+ * 全局统计 - 获取到连接超时的占用时长
+ */
+protected long accumulatedCheckoutTimeOfOverdueConnections = 0;
+/**
+ * 全局统计 - 等待连接的时间
+ */
+protected long accumulatedWaitTime = 0;
+/**
+ * 全局统计 - 等待连接的次数
+ */
+protected long hadToWaitCount = 0;
+/**
+ * 全局统计 - 获取到坏的连接的次数
+ */
+protected long badConnectionCount = 0;
+````
+
+## 5.4 PooledConnection ##
+org.apache.ibatis.datasource.pooled.PooledConnection ，实现 InvocationHandler 接口，池化的 Connection 对象。
+
+### 5.4.1 构造方法 ###
+
+````
+/**
+ * 关闭 Connection 方法名
+ */
+private static final String CLOSE = "close";
+
+/**
+ * JDK Proxy 的接口
+ */
+private static final Class<?>[] IFACES = new Class<?>[]{Connection.class};
+
+/**
+ * 对象的标识，基于 {@link #realConnection} 求 hashCode
+ */
+private final int hashCode;
+/**
+ * 所属的 PooledDataSource 对象
+ */
+private final PooledDataSource dataSource;
+/**
+ * 真实的 Connection 连接
+ */
+private final Connection realConnection;
+/**
+ * 代理的 Connection 连接，即 {@link PooledConnection} 这个动态代理的 Connection 对象
+ */
+private final Connection proxyConnection;
+/**
+ * 从连接池中，获取走的时间戳
+ */
+private long checkoutTimestamp;
+/**
+ * 对象创建时间
+ */
+private long createdTimestamp;
+/**
+ * 最后更新时间
+ */
+private long lastUsedTimestamp;
+/**
+ * 连接的标识，即 {@link PooledDataSource#expectedConnectionTypeCode}
+ */
+private int connectionTypeCode;
+/**
+ * 是否有效
+ */
+private boolean valid;
+
+/**
+ * Constructor for SimplePooledConnection that uses the Connection and PooledDataSource passed in
+ *
+ * @param connection - the connection that is to be presented as a pooled connection
+ * @param dataSource - the dataSource that the connection is from
+ */
+public PooledConnection(Connection connection, PooledDataSource dataSource) {
+    this.hashCode = connection.hashCode();
+    this.realConnection = connection;
+    this.dataSource = dataSource;
+    this.createdTimestamp = System.currentTimeMillis();
+    this.lastUsedTimestamp = System.currentTimeMillis();
+    this.valid = true;
+    // <1> 创建代理的 Connection 对象
+    this.proxyConnection = (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(), IFACES, this);
+}
+````
+
+### 5.4.2 invoke ###
+invoke(Object proxy, Method method, Object[] args) 方法，代理调用方法。
+
+````
+@Override
+public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+    String methodName = method.getName();
+    // 判断调用的方法是不是 Connection#close() 方法，如果是，则调用 PooledDataSource#pushConnection(PooledConnection conn) 方法，将该连接放回到连接池中，从而避免连接被关闭。
+    if (CLOSE.hashCode() == methodName.hashCode() && CLOSE.equals(methodName)) {
+        dataSource.pushConnection(this);
+        return null;
+    } else {
+        try {
+            // 判断非 Object 的方法，则额外调用 #checkConnection() 方法，则先检查连接是否可用。
+            if (!Object.class.equals(method.getDeclaringClass())) {
+                // issue #579 toString() should never fail
+                // throw an SQLException instead of a Runtime
+                checkConnection();
+            }
+            // 反射调用对应的方法。
+            return method.invoke(realConnection, args);
+        } catch (Throwable t) {
+            throw ExceptionUtil.unwrapThrowable(t);
+        }
+    }
+}
+````
+
+### 5.4.3 isValid ###
+isValid() 方法，校验连接是否可用。
+
+- 当连接有效时，调用 PooledDataSource#pingConnection(PooledConnection conn) 方法，向数据库发起 “ping” 请求，判断连接是否真正有效。
+
+### 5.4.4 invalidate ###
+invalidate() 方法，设置连接无效。
+
+````
+public boolean isValid() {
+    return valid && realConnection != null && dataSource.pingConnection(this);
+}
+````
 
 ----
