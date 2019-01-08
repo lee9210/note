@@ -1272,17 +1272,224 @@ public Class<?> classForName(String name, ClassLoader classLoader) throws ClassN
 ## 9.2 Resources ##
 org.apache.ibatis.io.Resources ，Resource 工具类。
 
+### 9.2.1 构造方法 ###
+
+````
+/**
+ * ClassLoaderWrapper 对象
+ */
+private static ClassLoaderWrapper classLoaderWrapper = new ClassLoaderWrapper();
+
+/**
+ * 字符集
+ */
+private static Charset charset;
+
+Resources() {
+}
+
+public static void setDefaultClassLoader(ClassLoader defaultClassLoader) {defaultClassLoader
+    classLoaderWrapper.defaultClassLoader = defaultClassLoader; // 修改 ClassLoaderWrapper.
+}
+
+public static void setCharset(Charset charset) {
+    Resources.charset = charset;
+}
+````
+
+### 9.2.2 getResource ###
+基于 classLoaderWrapper 属性的封装。
+
+#### 9.2.2.1 getResourceURL ####
+getResourceURL(String resource) 静态方法，获得指定资源的 URL 。
+
+#### 9.2.2.2 getResourceAsStream ####
+getResourceAsStream(String resource) 静态方法，获得指定资源的 InputStream 。
+
+#### 9.2.2.3 getResourceAsReader ####
+getResourceAsReader(String resource) 静态方法，获得指定资源的 Reader 。
+
+#### 9.2.2.4 getResourceAsFile ####
+getResourceAsFile(String resource) 静态方法，获得指定资源的 File 。
+
+#### 9.2.2.5 getResourceAsProperties ####
+
+### 9.2.3 getUrl ###
+#### 9.2.3.1 getUrlAsStream ####
+getUrlAsStream(String urlString) 静态方法，获得指定 URL 。
+
+#### 9.2.3.2 getUrlAsReader ####
+getUrlAsReader(String urlString) 静态方法，指定 URL 的 Reader 。
+
+#### 9.2.3.3 getUrlAsProperties ####
+getUrlAsReader(String urlString) 静态方法，指定 URL 的 Properties 。
+
+#### 9.2.3.4 classForName ####
+classForName(String className) 静态方法，获得指定类名对应的类。
+
+## 9.3 ResolverUtil ##
+org.apache.ibatis.io.ResolverUtil ，解析器工具类，用于获得指定目录符合条件的类们。
+
+### 9.3.1 Test ###
+Test ，匹配判断接口。
+
+#### 9.3.1.1 IsA ####
+IsA ，实现 Test 接口，判断是否为指定类
+
+#### 9.3.1.2 AnnotatedWith ####
+AnnotatedWith ，判断是否有指定注解。
+
+### 9.3.2 构造方法 ###
+````
+/** The set of matches being accumulated. */
+private Set<Class<? extends T>> matches = new HashSet<>(); // 符合条件的类的集合
+
+private ClassLoader classloader;
+
+public Set<Class<? extends T>> getClasses() {
+    return matches;
+}
+
+public ClassLoader getClassLoader() {
+    return classloader == null ? Thread.currentThread().getContextClassLoader() : classloader;
+}
+public void setClassLoader(ClassLoader classloader) {
+    this.classloader = classloader;
+}
+````
+
+### 9.3.3 find ###
+find(Test test, String packageName) 方法，获得指定包下，符合条件的类。
+
+````
+public ResolverUtil<T> find(Test test, String packageName) {
+    // <1> 获得包的路径
+    String path = getPackagePath(packageName);
+
+    try {
+        // <2> 获得路径下的所有文件
+        List<String> children = VFS.getInstance().list(path);
+        // <3> 遍历
+        for (String child : children) {
+            // 是 Java Class
+            if (child.endsWith(".class")) {
+                // 如果匹配，则添加到结果集
+                addIfMatching(test, child);
+            }
+        }
+    } catch (IOException ioe) {
+        log.error("Could not read package: " + packageName, ioe);
+    }
+
+    return this;
+} 
+````
+
+#### 9.3.3.1 findImplementations ####
+findImplementations(Class<?> parent, String... packageNames) 方法，判断指定目录下们，符合指定类的类们。
+
+#### 9.3.3.2 findAnnotated ####
+findAnnotated(Class<? extends Annotation> annotation, String... packageNames) 方法，判断指定目录下们，符合指定注解的类们。
+
+## 9.4 VFS ##
+org.apache.ibatis.io.VFS ，虚拟文件系统( Virtual File System )抽象类，用来查找指定路径下的的文件们。
+
+### 9.4.1 静态属性 ###
+
+````
+/** The built-in implementations. */
+public static final Class<?>[] IMPLEMENTATIONS = {JBoss6VFS.class, DefaultVFS.class}; // 静态属性，内置的 VFS 实现类的数组。目前 VFS 有 JBoss6VFS 和 DefaultVFS 两个实现类。
+
+/** The list to which implementations are added by {@link #addImplClass(Class)}. */
+public static final List<Class<? extends VFS>> USER_IMPLEMENTATIONS = new ArrayList<>(); // 自定义的 VFS 实现类的数组。可通过 #addImplClass(Class<? extends VFS> clazz) 方法，进行添加。
+
+public static void addImplClass(Class<? extends VFS> clazz) {
+    if (clazz != null) {
+        USER_IMPLEMENTATIONS.add(clazz);
+    }
+}
+````
+
+### 9.4.2 getInstance ###
+getInstance() 方法，获得 VFS 单例。
+
+单例有多种实现方式，该类采用的是“懒汉式，线程安全”。
+INSTANCE 属性，最后通过 #createVFS() 静态方法来创建，虽然 USER_IMPLEMENTATIONS 和 IMPLEMENTATIONS 有多种 VFS 的实现类，但是最终选择的是，最后一个符合的创建的 VFS 对象。
+
+### 9.4.3 反射相关方法 ###
+因为 VFS 自己有反射调用方法的需求，所以自己实现了三个方法。
+
+### 9.4.4 isValid ###
+isValid() 抽象方法，判断是否为合法的 VFS 。
+
+### 9.4.5 list ###
+list(String path) 方法，获得指定路径下的所有资源。
+
+````
+public List<String> list(String path) throws IOException {
+    List<String> names = new ArrayList<>();
+    for (URL url : getResources(path)) {
+        names.addAll(list(url, path));
+    }
+    return names;
+}
+````
+先调用 #getResources(String path) 静态方法，获得指定路径下的 URL 数组
+后遍历 URL 数组，调用 #list(URL url, String forPath) 方法，递归的列出所有的资源们。
+
+### 9.4.6 DefaultVFS ###
+org.apache.ibatis.io.DefaultVFS ，继承 VFS 抽象类，默认的 VFS 实现类。
+
+#### 9.4.6.1 isValid ####
+都返回 true ，因为默认支持。
+
+#### 9.4.6.2 list ####
+list(URL url, String path) 方法，递归的列出所有的资源们。
+
+大体逻辑就是，不断递归文件夹，获得到所有文件。
+
+### 9.4.7 JBoss6VFS ###
+
+org.apache.ibatis.io.JBoss6VFS ，继承 VFS 抽象类，基于 JBoss 的 VFS 实现类。
+
+----
+
+# 10 日志模块 #
+
+无论在开发测试环境中，还是在线上生产环境中，日志在整个系统中的地位都是非常重要的。良好的日志功能可以帮助开发人员和测试人员快速定位 Bug 代码，也可以帮助运维人员快速定位性能瓶颈等问题。目前的 Java 世界中存在很多优秀的日志框架，例如 Log4j、 Log4j2、Slf4j 等。
+
+MyBatis 作为一个设计优良的框架，除了提供详细的日志输出信息，还要能够集成多种日志框架，其日志模块的一个主要功能就是集成第三方日志框架。
 
 
+## 10.1 LogFactory ##
+org.apache.ibatis.logging.LogFactory ，Log 工厂类。
 
+### 10.1.1 构造方法 ###
+````
+/**
+ * Marker to be used by logging implementations that support markers
+ */
+public static final String MARKER = "MYBATIS";
 
+/**
+ * 使用的 Log 的构造方法
+ */
+private static Constructor<? extends Log> logConstructor;
 
+static {
+    // <1> 逐个尝试，判断使用哪个 Log 的实现类，即初始化 logConstructor 属性
+    tryImplementation(LogFactory::useSlf4jLogging);
+    tryImplementation(LogFactory::useCommonsLogging);
+    tryImplementation(LogFactory::useLog4J2Logging);
+    tryImplementation(LogFactory::useLog4JLogging);
+    tryImplementation(LogFactory::useJdkLogging);
+    tryImplementation(LogFactory::useNoLogging);
+}
 
-
-
-
-
-
+private LogFactory() {
+    // disable construction
+}
+````
 
 
 
