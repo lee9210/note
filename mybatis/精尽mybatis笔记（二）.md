@@ -863,14 +863,414 @@ private <T> TypeHandler<T> getTypeHandler(Type type, JdbcType jdbcType) {
     return (TypeHandler<T>) handler;
 }
 ````
+- <1> 处，调用 #getJdbcHandlerMap(Type type) 方法，获得 Java Type 对应的 TypeHandler 集合。
+- <2.1> 处，优先，使用 jdbcType 获取对应的 TypeHandler 。
+- <2.2> 处，其次，使用 null 获取对应的 TypeHandler ，可以认为是默认的 TypeHandler 。这里是解决一个 Java Type 可能对应多个 TypeHandler 的方式之一。
+- <2.3> 处，最差，调用 #pickSoleHandler(Map<JdbcType, TypeHandler<?>> jdbcHandlerMap) 方法，从 TypeHandler 集合中选择一个唯一的 TypeHandler 。代码如下：
+
+````
+private TypeHandler<?> pickSoleHandler(Map<JdbcType, TypeHandler<?>> jdbcHandlerMap) {
+    TypeHandler<?> soleHandler = null;
+    for (TypeHandler<?> handler : jdbcHandlerMap.values()) {
+        // 选择一个
+        if (soleHandler == null) {
+            soleHandler = handler;
+        // 如果还有，并且不同类，那么不好选择，所以返回 null
+        } else if (!handler.getClass().equals(soleHandler.getClass())) {
+            // More than one type handlers registered.
+            return null;
+        }
+    }
+    return soleHandler;
+}
+// 这段代码看起来比较绕，其实目的很清晰，就是选择第一个，并且不能有其它的不同类的处理器。
+// 这里是解决一个 Java Type 可能对应多个 TypeHandler 的方式之一。
+````
+通过 <2.1> + <2.2> + <2.3> 三处，解决 Java Type 对应的 TypeHandler 集合。
 
 
+````
+private Map<JdbcType, TypeHandler<?>> getJdbcHandlerMap(Type type) {
+    // <1.1> 获得 Java Type 对应的 TypeHandler 集合
+    Map<JdbcType, TypeHandler<?>> jdbcHandlerMap = TYPE_HANDLER_MAP.get(type);
+    // <1.2> 如果为 NULL_TYPE_HANDLER_MAP ，意味着为空，直接返回
+    if (NULL_TYPE_HANDLER_MAP.equals(jdbcHandlerMap)) {
+        return null;
+    }
+    // <1.3> 如果找不到
+    if (jdbcHandlerMap == null && type instanceof Class) {
+        Class<?> clazz = (Class<?>) type;
+        // 枚举类型
+        if (clazz.isEnum()) {
+            // 获得父类对应的 TypeHandler 集合
+            jdbcHandlerMap = getJdbcHandlerMapForEnumInterfaces(clazz, clazz);
+            // 如果找不到
+            if (jdbcHandlerMap == null) {
+                // 注册 defaultEnumTypeHandler ，并使用它
+                register(clazz, getInstance(clazz, defaultEnumTypeHandler));
+                // 返回结果
+                return TYPE_HANDLER_MAP.get(clazz);
+            }
+        // 非枚举类型
+        } else {
+            // 获得父类对应的 TypeHandler 集合
+            jdbcHandlerMap = getJdbcHandlerMapForSuperclass(clazz);
+        }
+    }
+    // <1.4> 如果结果为空，设置为 NULL_TYPE_HANDLER_MAP ，提升查找速度，避免二次查找
+    TYPE_HANDLER_MAP.put(type, jdbcHandlerMap == null ? NULL_TYPE_HANDLER_MAP : jdbcHandlerMap);
+    // 返回结果
+    return jdbcHandlerMap;
+}
+````
+- <1.1> 处，获得 Java Type 对应的 TypeHandler 集合。
+- <1.2> 处，如果为 NULL_TYPE_HANDLER_MAP ，意味着为空，直接返回。原因可见 <1.4> 处。
+- <1.3> 处，找不到，则根据 type 是否为枚举类型，进行不同处理。
+- <1.4> 处，如果结果为空，设置为 NULL_TYPE_HANDLER_MAP ，提升查找速度，避免二次查找。
+
+**【非枚举】**
+先调用 #getJdbcHandlerMapForEnumInterfaces(Class<?> clazz, Class<?> enumClazz) 方法， 获得父类对应的 TypeHandler 集合。代码如下：
+
+````
+private Map<JdbcType, TypeHandler<?>> getJdbcHandlerMapForEnumInterfaces(Class<?> clazz, Class<?> enumClazz) {
+    // 遍历枚举类的所有接口
+    for (Class<?> iface : clazz.getInterfaces()) {
+        // 获得该接口对应的 jdbcHandlerMap 集合
+        Map<JdbcType, TypeHandler<?>> jdbcHandlerMap = TYPE_HANDLER_MAP.get(iface);
+        // 为空，递归 getJdbcHandlerMapForEnumInterfaces 方法，继续从父类对应的 TypeHandler 集合
+        if (jdbcHandlerMap == null) {
+            jdbcHandlerMap = getJdbcHandlerMapForEnumInterfaces(iface, enumClazz);
+        }
+        // 如果找到，则从 jdbcHandlerMap 初始化中 newMap 中，并进行返回
+        if (jdbcHandlerMap != null) {
+            // Found a type handler regsiterd to a super interface
+            HashMap<JdbcType, TypeHandler<?>> newMap = new HashMap<>();
+            for (Entry<JdbcType, TypeHandler<?>> entry : jdbcHandlerMap.entrySet()) {
+                // Create a type handler instance with enum type as a constructor arg
+                newMap.put(entry.getKey(), getInstance(enumClazz, entry.getValue().getClass()));
+            }
+            return newMap;
+        }
+    }
+    // 找不到，则返回 null
+    return null;
+}
+````
+找不到，则注册 defaultEnumTypeHandler ，并使用它。
 
 
+**【非枚举】**
+调用 #getJdbcHandlerMapForSuperclass(Class<?> clazz) 方法，获得父类对应的 TypeHandler 集合。代码如下：
 
+````
+private Map<JdbcType, TypeHandler<?>> getJdbcHandlerMapForSuperclass(Class<?> clazz) {
+    // 获得父类
+    Class<?> superclass = clazz.getSuperclass();
+    // 不存在非 Object 的父类，返回 null
+    if (superclass == null || Object.class.equals(superclass)) {
+        return null;
+    }
+    // 获得父类对应的 TypeHandler 集合
+    Map<JdbcType, TypeHandler<?>> jdbcHandlerMap = TYPE_HANDLER_MAP.get(superclass);
+    // 找到，则直接返回
+    if (jdbcHandlerMap != null) {
+        return jdbcHandlerMap;
+    // 找不到，则递归 getJdbcHandlerMapForSuperclass 方法，继续获得父类对应的 TypeHandler 集合
+    } else {
+        return getJdbcHandlerMapForSuperclass(superclass);
+    }
+}
+````
 
+## 8.6 TypeAliasRegistry ##
+org.apache.ibatis.type.TypeAliasRegistry ，类型与别名的注册表。通过别名，我们在 Mapper XML 中的 resultType 和 parameterType 属性，直接使用，而不用写全类名。
 
+### 8.6.1 构造方法 ###
 
+````
+/**
+ * 类型与别名的映射。
+ */
+private final Map<String, Class<?>> TYPE_ALIASES = new HashMap<>();
+
+/**
+ * 初始化默认的类型与别名
+ *
+ * 另外，在 {@link org.apache.ibatis.session.Configuration} 构造方法中，也有默认的注册
+ */
+public TypeAliasRegistry() {
+    registerAlias("string", String.class);
+    registerAlias("byte", Byte.class);
+    // ... 省略其他注册调用
+}
+````
+### 8.6.2 registerAlias ###
+registerAlias(Class<?> type) 方法，注册指定类。
+
+````
+public void registerAlias(Class<?> type) {
+    // <1> 默认为，简单类名
+    String alias = type.getSimpleName();
+    // <2> 如果有注解，使用注册上的名字
+    Alias aliasAnnotation = type.getAnnotation(Alias.class);
+    if (aliasAnnotation != null) {
+        alias = aliasAnnotation.value();
+    }
+    // <3> 调用 #registerAlias(String alias, Class<?> value) 方法，注册类型与别名的注册表
+    registerAlias(alias, type);
+}
+````
+````
+public void registerAlias(String alias, Class<?> value) {
+    if (alias == null) {
+        throw new TypeException("The parameter alias cannot be null");
+    }
+    // 将别名转换成**小写**。这样的话，无论我们在 Mapper XML 中，写 `String` 还是 `string` 甚至是 `STRING` ，都是对应的 String 类型。
+    String key = alias.toLowerCase(Locale.ENGLISH);
+    if (TYPE_ALIASES.containsKey(key) && TYPE_ALIASES.get(key) != null && !TYPE_ALIASES.get(key).equals(value)) { // <2> 如果已经注册，并且类型不一致，说明有冲突，抛出 TypeException 异常。
+        throw new TypeException("The alias '" + alias + "' is already mapped to the value '" + TYPE_ALIASES.get(key).getName() + "'.");
+    }
+    // <3> 添加到 `TYPE_ALIASES` 中。
+    TYPE_ALIASES.put(key, value);
+}
+````
+
+### 8.6.3 registerAliases ###
+registerAliases(String packageName, ...) 方法，扫描指定包下的所有类，并进行注册。
+
+````
+/**
+ * 注册指定包下的别名与类的映射
+ */
+public void registerAliases(String packageName) {
+    registerAliases(packageName, Object.class);
+}
+
+/**
+ * 注册指定包下的别名与类的映射。另外，要求类必须是 {@param superType} 类型（包括子类）。
+ * @param packageName 指定包
+ * @param superType 指定父类
+ */
+public void registerAliases(String packageName, Class<?> superType) {
+    // 获得指定包下的类门
+    ResolverUtil<Class<?>> resolverUtil = new ResolverUtil<>();
+    resolverUtil.find(new ResolverUtil.IsA(superType), packageName);
+    Set<Class<? extends Class<?>>> typeSet = resolverUtil.getClasses();
+    // 遍历，逐个注册类型与别名的注册表
+    for (Class<?> type : typeSet) {
+        if (!type.isAnonymousClass() // 排除匿名类
+                && !type.isInterface()  // 排除接口
+                && !type.isMemberClass()) { // 排除内部类
+            registerAlias(type);
+        }
+    }
+}
+
+// #resolveAlias(String string) 方法，获得别名对应的类型。代码如下：
+
+// TypeAliasRegistry.java
+
+public <T> Class<T> resolveAlias(String string) {
+    try {
+        if (string == null) {
+            return null;
+        }
+        // issue #748
+        // <1> 转换成小写
+        String key = string.toLowerCase(Locale.ENGLISH);
+        Class<T> value;
+        // <2.1> 首先，从 TYPE_ALIASES 中获取
+        if (TYPE_ALIASES.containsKey(key)) {
+            value = (Class<T>) TYPE_ALIASES.get(key);
+        // <2.2> 其次，直接获得对应类
+        } else {
+            value = (Class<T>) Resources.classForName(string);
+        }
+        return value;
+    } catch (ClassNotFoundException e) { // <2.3> 异常
+        throw new TypeException("Could not resolve type alias '" + string + "'.  Cause: " + e, e);
+    }
+}
+
+//<1> 处，将别名转换成小写。
+//<2.1> 处，首先，从 TYPE_ALIASES 中获取对应的类型。
+//<2.2> 处，其次，直接获取对应的类。所以，这个方法，同时处理了别名与全类名两种情况。
+//<2.3> 处，最差，找不到对应的类，发生异常，抛出 TypeException 异常。
+````
+
+## 8.7 SimpleTypeRegistry ##
+org.apache.ibatis.type.SimpleTypeRegistry ，简单类型注册表。
+
+````
+public class SimpleTypeRegistry {
+
+    /**
+     * 简单类型的集合
+     */
+    private static final Set<Class<?>> SIMPLE_TYPE_SET = new HashSet<>();
+
+    // 初始化常用类到 SIMPLE_TYPE_SET 中
+    static {
+        SIMPLE_TYPE_SET.add(String.class);
+        SIMPLE_TYPE_SET.add(Byte.class);
+        SIMPLE_TYPE_SET.add(Short.class);
+        SIMPLE_TYPE_SET.add(Character.class);
+        SIMPLE_TYPE_SET.add(Integer.class);
+        SIMPLE_TYPE_SET.add(Long.class);
+        SIMPLE_TYPE_SET.add(Float.class);
+        SIMPLE_TYPE_SET.add(Double.class);
+        SIMPLE_TYPE_SET.add(Boolean.class);
+        SIMPLE_TYPE_SET.add(Date.class);
+        SIMPLE_TYPE_SET.add(Class.class);
+        SIMPLE_TYPE_SET.add(BigInteger.class);
+        SIMPLE_TYPE_SET.add(BigDecimal.class);
+    }
+
+    private SimpleTypeRegistry() {
+        // Prevent Instantiation
+    }
+
+    /*
+     * Tells us if the class passed in is a known common type
+     */
+    public static boolean isSimpleType(Class<?> clazz) {
+        return SIMPLE_TYPE_SET.contains(clazz);
+    }
+
+}
+````
+
+## 8.8 ByteArrayUtils ##
+org.apache.ibatis.type.ByteArrayUtils ，Byte 数组的工具类。
+
+# 9 IO 模块 #
+资源加载模块，主要是对类加载器进行封装，确定类加载器的使用顺序，并提供了加载类文件以及其他资源文件的功能 。
+
+## 9.1 ClassLoaderWrapper ##
+
+org.apache.ibatis.io.ClassLoaderWrapper ，ClassLoader 包装器。可使用多个 ClassLoader 加载对应的资源，直到有一成功后返回资源。
+
+### 9.1.1 构造方法 ###
+
+````
+/**
+ * 默认 ClassLoader 对象
+ */
+ClassLoader defaultClassLoader;
+/**
+ * 系统 ClassLoader 对象
+ */
+ClassLoader systemClassLoader;
+
+ClassLoaderWrapper() {
+    try {
+        systemClassLoader = ClassLoader.getSystemClassLoader();
+    } catch (SecurityException ignored) {
+        // AccessControlException on Google App Engine
+    }
+}
+````
+
+- defaultClassLoader 属性，默认 ClassLoader 对象。目前不存在初始化该属性的构造方法。可通过 ClassLoaderWrapper.defaultClassLoader = xxx 的方式，进行设置。
+- systemClassLoader 属性，系统 ClassLoader 对象。在构造方法中，已经初始化。
+
+### 9.1.2 getClassLoaders ###
+getClassLoaders(ClassLoader classLoader) 方法，获得 ClassLoader 数组。
+
+````
+ClassLoader[] getClassLoaders(ClassLoader classLoader) {
+    return new ClassLoader[]{
+            classLoader,
+            defaultClassLoader,
+            Thread.currentThread().getContextClassLoader(),
+            getClass().getClassLoader(),
+            systemClassLoader};
+}
+````
+
+### 9.1.3 getResourceAsURL ###
+getResourceAsURL(String resource, ...) 方法，获得指定资源的 URL 。
+
+````
+/**
+ * Get a resource as a URL using the current class path
+ * @param resource - the resource to locate
+ * @return the resource or null
+ */
+public URL getResourceAsURL(String resource) {
+    return getResourceAsURL(resource, getClassLoaders(null));
+}
+ 
+/**
+ * Get a resource from the classpath, starting with a specific class loader
+ * @param resource    - the resource to find
+ * @param classLoader - the first classloader to try
+ * @return the stream or null
+ */
+public URL getResourceAsURL(String resource, ClassLoader classLoader) {
+    return getResourceAsURL(resource, getClassLoaders(classLoader));
+}
+````
+- 先调用 #getClassLoaders(ClassLoader classLoader) 方法，获得 ClassLoader 数组。
+- 再调用 #getResourceAsURL(String resource, ClassLoader[] classLoader) 方法，获得指定资源的 InputStream 。
+
+### 9.1.4 getResourceAsStream ###
+getResourceAsStream(String resource, ...) 方法，获得指定资源的 InputStream 对象。
+
+````
+/**
+ * Get a resource from the classpath
+ * @param resource - the resource to find
+ * @return the stream or null
+ */
+public InputStream getResourceAsStream(String resource) {
+    return getResourceAsStream(resource, getClassLoaders(null));
+}
+
+/**
+ * Get a resource from the classpath, starting with a specific class loader
+ * @param resource    - the resource to find
+ * @param classLoader - the first class loader to try
+ * @return the stream or null
+ */
+public InputStream getResourceAsStream(String resource, ClassLoader classLoader) {
+    return getResourceAsStream(resource, getClassLoaders(classLoader));
+}
+````
+
+- 先调用 #getClassLoaders(ClassLoader classLoader) 方法，获得 ClassLoader 数组。
+- 再调用 #getResourceAsStream(String resource, ClassLoader[] classLoader) 方法，获得指定资源的 InputStream 。
+
+### 9.1.5 classForName ###
+classForName(String name, ...) 方法，获得指定类名对应的类
+
+````
+/**
+ * Find a class on the classpath (or die trying)
+ * @param name - the class to look for
+ * @return - the class
+ * @throws ClassNotFoundException Duh.
+ */
+public Class<?> classForName(String name) throws ClassNotFoundException {
+    return classForName(name, getClassLoaders(null));
+}
+
+/**
+ * Find a class on the classpath, starting with a specific classloader (or die trying)
+ * @param name        - the class to look for
+ * @param classLoader - the first classloader to try
+ * @return - the class
+ * @throws ClassNotFoundException Duh.
+ */
+public Class<?> classForName(String name, ClassLoader classLoader) throws ClassNotFoundException {
+    return classForName(name, getClassLoaders(classLoader));
+}
+````
+- 先调用 #getClassLoaders(ClassLoader classLoader) 方法，获得 ClassLoader 数组。
+- 再调用 #classForName(String name, ClassLoader[] classLoader) 方法，获得指定类名对应的类。
+
+## 9.2 Resources ##
+org.apache.ibatis.io.Resources ，Resource 工具类。
 
 
 
