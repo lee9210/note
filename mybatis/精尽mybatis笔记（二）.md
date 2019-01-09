@@ -1477,7 +1477,7 @@ public static final String MARKER = "MYBATIS";
 private static Constructor<? extends Log> logConstructor;
 
 static {
-    // <1> 逐个尝试，判断使用哪个 Log 的实现类，即初始化 logConstructor 属性
+    // 按照 Slf4j、CommonsLogging、Log4J2Logging、Log4JLogging、JdkLogging、NoLogging 的顺序，逐个尝试，判断使用哪个 Log 的实现类，即初始化 logConstructor 属性。
     tryImplementation(LogFactory::useSlf4jLogging);
     tryImplementation(LogFactory::useCommonsLogging);
     tryImplementation(LogFactory::useLog4J2Logging);
@@ -1491,6 +1491,337 @@ private LogFactory() {
 }
 ````
 
+tryImplementation(Runnable runnable) 方法，判断使用哪个 Log 的实现类。
+````
+private static void tryImplementation(Runnable runnable) {
+    if (logConstructor == null) {//当 logConstructor 为空时，执行 runnable 的方法。
+        try {
+            runnable.run();
+        } catch (Throwable t) {
+            // ignore
+        }
+    }
+}
+````
+tryImplementation(LogFactory::useSlf4jLogging) 代码块,执行设置logConstructor
+````
+// 如果对应的类能创建成功，意味着可以使用，设置为 logConstructor
+private static void setImplementation(Class<? extends Log> implClass) {
+    try {
+        // 获得参数为 String 的构造方法
+        Constructor<? extends Log> candidate = implClass.getConstructor(String.class);
+        // 创建 Log 对象
+        Log log = candidate.newInstance(LogFactory.class.getName());
+        if (log.isDebugEnabled()) {
+            log.debug("Logging initialized using '" + implClass + "' adapter.");
+        }
+        // 创建成功，意味着可以使用，设置为 logConstructor
+        logConstructor = candidate;
+    } catch (Throwable t) {
+        throw new LogException("Error setting Log implementation.  Cause: " + t, t);
+    }
+}
+````
+### 10.1.2 getLog ###
+getLog(...) 方法，获得 Log 对象。
 
+## 10.2 Log ##
+org.apache.ibatis.logging.Log ，MyBatis Log 接口。
 
-----
+### 10.2.1 StdOutImpl ###
+org.apache.ibatis.logging.stdout.StdOutImpl ，实现 Log 接口，StdOut 实现类。
+比较简单，基于 System.out 和 System.err 来实现。
+
+### Slf4jImpl ###
+org.apache.ibatis.logging.slf4j.Slf4jImpl ，实现 Log 接口，Slf4j 实现类。
+
+**构造方法**
+````
+public Slf4jImpl(String clazz) {
+    // 使用 SLF LoggerFactory 获得 SLF Logger 对象
+    Logger logger = LoggerFactory.getLogger(clazz);
+    // 如果是 LocationAwareLogger ，则创建 Slf4jLocationAwareLoggerImpl 对象
+    if (logger instanceof LocationAwareLogger) {
+        try {
+            // check for slf4j >= 1.6 method signature
+            logger.getClass().getMethod("log", Marker.class, String.class, int.class, String.class, Object[].class, Throwable.class);
+            log = new Slf4jLocationAwareLoggerImpl((LocationAwareLogger) logger);
+            return;
+        } catch (SecurityException | NoSuchMethodException e) {
+            // fail-back to Slf4jLoggerImpl
+        }
+    }
+    // 否则，创建 Slf4jLoggerImpl 对象
+    log = new Slf4jLoggerImpl(logger);
+}
+````
+
+- 在构造方法中，可以看到，适配不同的 SLF4J 的版本，分别使用 org.apache.ibatis.logging.slf4j.Slf4jLocationAwareLoggerImpl 和 org.apache.ibatis.logging.slf4j.Slf4jLoggerImpl 类。
+- 具体的方法实现，委托调用对应的 SLF4J 的方法。
+
+## 10.3 BaseJdbcLogger ##
+在 org.apache.ibatis.logging 包下的 jdbc 包，有如下五个类：
+
+- BaseJdbcLogger
+	- ConnectionLogger
+	- PreparedStatementLogger
+	- StatementLogger
+	- ResultSetLogger
+
+是一个基于 JDBC 接口实现增强的案例，而原理上，也是基于 JDK 实现动态代理。
+
+# 11 注解模块 #
+
+- 增删改查： @Insert、@Update、@Delete、@Select、@MapKey、@Options、@SelelctKey、@Param、@InsertProvider、@UpdateProvider、@DeleteProvider、@SelectProvider
+- 结果集映射： @Results、@Result、@ResultMap、@ResultType、@ConstructorArgs、@Arg、@One、@Many、@TypeDiscriminator、@Case
+- 缓存： @CacheNamespace、@Property、@CacheNamespaceRef、@Flush
+
+## 11.1 CRUD 常用操作注解 ##
+
+````
+// 最基本的注解CRUD
+public interface IUserDAO {
+
+    @Select("select *from User")
+    public List<User> retrieveAllUsers();
+                                                                                                                                                                                                                                  
+    //注意这里只有一个参数，则#{}中的标识符可以任意取
+    @Select("select *from User where id=#{idss}")
+    public User retrieveUserById(int id);
+                                                                                                                                                                                                                                  
+    @Select("select *from User where id=#{id} and userName like #{name}")
+    public User retrieveUserByIdAndName(@Param("id")int id,@Param("name")String names);
+                                                                                                                                                                                                                                  
+    @Insert("INSERT INTO user(userName,userAge,userAddress) VALUES(#{userName},"
+            + "#{userAge},#{userAddress})")
+    public void addNewUser(User user);
+                                                                                                                                                                                                                                  
+    @Delete("delete from user where id=#{id}")
+    public void deleteUser(int id);
+                                                                                                                                                                                                                                  
+    @Update("update user set userName=#{userName},userAddress=#{userAddress}"
+            + " where id=#{id}")
+    public void updateUser(User user);
+    
+}
+````
+
+### 11.1.1 @Select ###
+org.apache.ibatis.annotations.@Select ，查询语句注解。
+
+### 11.1.2 @Insert ###
+org.apache.ibatis.annotations.@Insert ，插入语句注解。
+
+### 11.1.3 @Update ###
+org.apache.ibatis.annotations.@Update ，更新语句注解。
+
+### 11.1.4 @Delete ###
+org.apache.ibatis.annotations.@Delete ，删除语句注解。
+
+### 11.1.5 @Param ###
+org.apache.ibatis.annotations.@Param ，方法参数名的注解。
+
+- 当映射器方法需多个参数，这个注解可以被应用于映射器方法参数来给每个参数一个名字。否则，多参数将会以它们的顺序位置来被命名。比如 #{1}，#{2} 等，这是默认的。
+- 使用 @Param("person") ，SQL 中参数应该被命名为 #{person} 。
+
+## 11.2 CRUD 高级操作注解 ##
+
+````
+@CacheNamespace(size=100)
+public interface IBlogDAO {
+
+    @SelectProvider(type = BlogSqlProvider.class, method = "getSql") 
+    @Results(value ={ 
+            @Result(id=true, property="id",column="id",javaType=Integer.class,jdbcType=JdbcType.INTEGER),
+            @Result(property="title",column="title",javaType=String.class,jdbcType=JdbcType.VARCHAR),
+            @Result(property="date",column="date",javaType=String.class,jdbcType=JdbcType.VARCHAR),
+            @Result(property="authername",column="authername",javaType=String.class,jdbcType=JdbcType.VARCHAR),
+            @Result(property="content",column="content",javaType=String.class,jdbcType=JdbcType.VARCHAR),
+            }) 
+    public Blog getBlog(@Param("id") int id);
+                                                                                                                                                                                      
+    @SelectProvider(type = BlogSqlProvider.class, method = "getAllSql") 
+    @Results(value ={ 
+            @Result(id=true, property="id",column="id",javaType=Integer.class,jdbcType=JdbcType.INTEGER),
+            @Result(property="title",column="title",javaType=String.class,jdbcType=JdbcType.VARCHAR),
+            @Result(property="date",column="date",javaType=String.class,jdbcType=JdbcType.VARCHAR),
+            @Result(property="authername",column="authername",javaType=String.class,jdbcType=JdbcType.VARCHAR),
+            @Result(property="content",column="content",javaType=String.class,jdbcType=JdbcType.VARCHAR),
+            }) 
+    public List<Blog> getAllBlog();
+                                                                                                                                                                                      
+    @SelectProvider(type = BlogSqlProvider.class, method = "getSqlByTitle") 
+    @ResultMap(value = "sqlBlogsMap") 
+    // 这里调用resultMap，这个是SQL配置文件中的,必须该SQL配置文件与本接口有相同的全限定名
+    // 注意文件中的namespace路径必须是使用@resultMap的类路径
+    public List<Blog> getBlogByTitle(@Param("title")String title);
+                                                                                                                                                                                      
+    @InsertProvider(type = BlogSqlProvider.class, method = "insertSql") 
+    public void insertBlog(Blog blog);
+                                                                                                                                                                                      
+    @UpdateProvider(type = BlogSqlProvider.class, method = "updateSql")
+    public void updateBlog(Blog blog);
+                                                                                                                                                                                      
+    @DeleteProvider(type = BlogSqlProvider.class, method = "deleteSql")
+    @Options(useCache = true, flushCache = false, timeout = 10000) 
+    public void deleteBlog(int ids);
+                                                                                                                                                                                      
+}
+````
+BlogSqlProvider 类
+
+````
+wmport java.util.Map;
+import static org.apache.ibatis.jdbc.SqlBuilder.*;
+package com.whut.sqlTool;
+import java.util.Map;
+import static org.apache.ibatis.jdbc.SqlBuilder.*;
+
+public class BlogSqlProvider {
+
+    private final static String TABLE_NAME = "blog";
+    
+    public String getSql(Map<Integer, Object> parameter) {
+        BEGIN();
+        //SELECT("id,title,authername,date,content");
+        SELECT("*");
+        FROM(TABLE_NAME);
+        //注意这里这种传递参数方式，#{}与map中的key对应，而map中的key又是注解param设置的
+        WHERE("id = #{id}");
+        return SQL();
+    }
+    
+    public String getAllSql() {
+        BEGIN();
+        SELECT("*");
+        FROM(TABLE_NAME);
+        return SQL();
+    }
+    
+    public String getSqlByTitle(Map<String, Object> parameter) {
+        String title = (String) parameter.get("title");
+        BEGIN();
+        SELECT("*");
+        FROM(TABLE_NAME);
+        if (title != null)
+            WHERE(" title like #{title}");
+        return SQL();
+    }
+    
+    public String insertSql() {
+        BEGIN();
+        INSERT_INTO(TABLE_NAME);
+        VALUES("title", "#{title}");
+        //  VALUES("title", "#{tt.title}");
+        //这里是传递一个Blog对象的，如果是利用上面tt.方式，则必须利用Param来设置别名
+        VALUES("date", "#{date}");
+        VALUES("authername", "#{authername}");
+        VALUES("content", "#{content}");
+        return SQL();
+    }
+    
+    public String deleteSql() {
+        BEGIN();
+        DELETE_FROM(TABLE_NAME);
+        WHERE("id = #{id}");
+        return SQL();
+    }
+    
+    public String updateSql() {
+        BEGIN();
+        UPDATE(TABLE_NAME);
+        SET("content = #{content}");
+        WHERE("id = #{id}");
+        return SQL();
+    }
+}
+````
+该示例使用 org.apache.ibatis.jdbc.SqlBuilder 来实现 SQL 的拼接与生成。实际上，目前该类已经废弃，推荐使用个的是 org.apache.ibatis.jdbc.SQL 类。
+具体的 SQL 使用示例，可参见 org.apache.ibatis.jdbc.SQLTest 单元测试类。
+
+Mapper XML 配置：
+````
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+"http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.whut.inter.IBlogDAO">
+   <resultMap type="Blog" id="sqlBlogsMap">
+      <id property="id" column="id"/>
+      <result property="title" column="title"/>
+      <result property="authername" column="authername"/>
+      <result property="date" column="date"/>
+      <result property="content" column="content"/>
+   </resultMap> 
+</mapper>
+````
+
+### 11.2.1 @SelectProvider ###
+org.apache.ibatis.annotations.@SelectProvider ，查询语句提供器。
+
+从上面的使用示例可知，XXXProvider 的用途是，指定一个类( type )的指定方法( method )，返回使用的 SQL 。并且，该方法可以使用 Map<String,Object> params 来作为方法参数，传递参数。
+
+### 11.2.2 @InsertProvider ###
+org.apache.ibatis.annotations.@InsertProvider ，插入语句提供器。
+
+### 11.2.3 @UpdateProvider ###
+org.apache.ibatis.annotations.@UpdateProvider ，更新语句提供器。
+
+### 11.2.4 @DeleteProvider ###
+org.apache.ibatis.annotations.@DeleteProvider ，删除语句提供器。
+
+### 11.2.5 @Results ###
+org.apache.ibatis.annotations.@Results ，结果的注解。
+
+### 11.2.6 @Result ###
+org.apache.ibatis.annotations.@Results ，结果字段的注解。
+
+#### 11.2.6.1 @One ####
+org.apache.ibatis.annotations.@One ，复杂类型的单独属性值的注解。
+
+#### 11.2.6.2 @Many ####
+org.apache.ibatis.annotations.@Many ，复杂类型的集合属性值的注解。
+
+#### 11.2.7 @ResultMap ####
+org.apache.ibatis.annotations.@ResultMap ，使用的结果集的注解。
+
+- 例如上述示例的 #getBlogByTitle(@Param("title")String title) 方法，使用的注解为 @ResultMap(value = "sqlBlogsMap")，而 "sqlBlogsMap" 中 Mapper XML 中有相关的定义。
+
+#### 11.2.8 @ResultType ####
+org.apache.ibatis.annotations.@ResultType ，结果类型。
+
+### 11.2.9 @CacheNamespace ###
+org.apache.ibatis.annotations.@CacheNamespace ，缓存空间配置的注解。
+
+````
+对应 XML 标签为 <cache />
+````
+
+#### 11.2.9.1 @Property ####
+org.apache.ibatis.annotations.@Property ，属性的注解。
+
+#### 11.2.10 @CacheNamespaceRef ####
+org.apache.ibatis.annotations.@CacheNamespaceRef ，指向指定命名空间的注解。
+
+````
+对应 XML 标签为 <cache-ref />
+````
+### 11.2.11 @Options ###
+org.apache.ibatis.annotations.@Options ，操作可选项。
+
+### 11.2.12 @SelectKey ###
+org.apache.ibatis.annotations.@SelectKey ，通过 SQL 语句获得主键的注解。
+
+### 11.2.13 @MapKey ###
+org.apache.ibatis.annotations.@MapKey ，Map 结果的键的注解。
+
+### 11.2.14 @Flush ###
+org.apache.ibatis.annotations.@Flush ，Flush 注解。
+如果使用了这个注解，定义在 Mapper 接口中的方法能够调用 SqlSession#flushStatements() 方法。（Mybatis 3.3及以上）
+
+## 11.3 其它注解 ##
+### 11.3.1 @Mapper ###
+org.apache.ibatis.annotations.Mapper ，标记这是个 Mapper 的注解。
+
+### 11.3.2 @Lang ###
+org.apache.ibatis.annotations.@Lang ，语言驱动的注解。
+https://www.jianshu.com/p/03642b807688
