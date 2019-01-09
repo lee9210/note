@@ -587,11 +587,230 @@ mapper文件的解析结果映射:
 
 ![](/picture/mybatis-mapper-map-result.png)
 
+mybatis初始化流程:
+![](/picture/mybatis-init-flow.png)
 
+## 15.1 XMLMapperBuilder ##
+org.apache.ibatis.builder.xml.XMLMapperBuilder ，继承 BaseBuilder 抽象类，Mapper XML 配置构建器，主要负责解析 Mapper 映射配置文件。
 
+### 15.1.1 构造方法 ###
+````
+/**
+ * 基于 Java XPath 解析器
+ */
+private final XPathParser parser;
+/**
+ * Mapper 构造器助手
+ * builderAssistant 属性，MapperBuilderAssistant 对象，是 XMLMapperBuilder 和 MapperAnnotationBuilder 的小助手，提供了一些公用的方法，例如创建 ParameterMap、MappedStatement 对象等等。关于 MapperBuilderAssistant 类
+ */
+private final MapperBuilderAssistant builderAssistant;
+/**
+ * 可被其他语句引用的可重用语句块的集合
+ *
+ * 例如：<sql id="userColumns"> ${alias}.id,${alias}.username,${alias}.password </sql>
+ */
+private final Map<String, XNode> sqlFragments;
+/**
+ * 资源引用的地址
+ */
+private final String resource;
 
+private XMLMapperBuilder(XPathParser parser, Configuration configuration, String resource, Map<String, XNode> sqlFragments) {
+    super(configuration);
+    // 创建 MapperBuilderAssistant 对象
+    this.builderAssistant = new MapperBuilderAssistant(configuration, resource);
+    this.parser = parser;
+    this.sqlFragments = sqlFragments;
+    this.resource = resource;
+}
+````
 
+### 15.1.2 parse ###
+parse() 方法，解析 Mapper XML 配置文件。
+````
+public void parse() {
+    // <1> 判断当前 Mapper 是否已经加载过
+    if (!configuration.isResourceLoaded(resource)) {
+        // <2> 解析 `<mapper />` 节点
+        configurationElement(parser.evalNode("/mapper"));
+        // <3> 标记该 Mapper 已经加载过
+        configuration.addLoadedResource(resource);
+        // <4> 绑定 Mapper
+        bindMapperForNamespace();
+    }
 
+    // <5> 解析待定的 <resultMap /> 节点
+    parsePendingResultMaps();
+    // <6> 解析待定的 <cache-ref /> 节点
+    parsePendingCacheRefs();
+    // <7> 解析待定的 SQL 语句的节点
+    parsePendingStatements();
+}
+````
+
+### 15.1.3 configurationElement ###
+configurationElement(XNode context) 方法，解析 <mapper /> 节点。
+
+````
+private void configurationElement(XNode context) {
+    try {
+        // <1> 获得 namespace 属性
+        String namespace = context.getStringAttribute("namespace");
+        if (namespace == null || namespace.equals("")) {
+            throw new BuilderException("Mapper's namespace cannot be empty");
+        }
+        // <1> 设置 namespace 属性
+        builderAssistant.setCurrentNamespace(namespace);
+        // <2> 解析 <cache-ref /> 节点
+        cacheRefElement(context.evalNode("cache-ref"));
+        // <3> 解析 <cache /> 节点
+        cacheElement(context.evalNode("cache"));
+        // 已废弃！老式风格的参数映射。内联参数是首选,这个元素可能在将来被移除，这里不会记录。
+        parameterMapElement(context.evalNodes("/mapper/parameterMap"));
+        // <4> 解析 <resultMap /> 节点们
+        resultMapElements(context.evalNodes("/mapper/resultMap"));
+        // <5> 解析 <sql /> 节点们
+        sqlElement(context.evalNodes("/mapper/sql"));
+        // <6> 解析 <select /> <insert /> <update /> <delete /> 节点们
+        buildStatementFromContext(context.evalNodes("select|insert|update|delete"));
+    } catch (Exception e) {
+        throw new BuilderException("Error parsing Mapper XML. The XML location is '" + resource + "'. Cause: " + e, e);
+    }
+}
+````
+
+#### 15.1.3.1 cacheElement ####
+
+cacheRefElement(XNode context) 方法，解析 <cache-ref /> 节点。
+
+例如：
+````
+<cache-ref namespace="com.someone.application.data.SomeMapper"/>
+````
+#### 15.1.3.2 cacheElement ####
+cacheElement(XNode context) 方法，解析 cache /> 标签。
+
+#### 15.1.3.3 resultMapElements ####
+
+resultMapElements(List<XNode> list) 方法，解析 <resultMap /> 节点们。
+
+````
+// 解析 <resultMap /> 节点们
+private void resultMapElements(List<XNode> list) throws Exception {
+    // 遍历 <resultMap /> 节点们
+    for (XNode resultMapNode : list) {
+        try {
+            // 处理单个 <resultMap /> 节点
+            resultMapElement(resultMapNode);
+        } catch (IncompleteElementException e) {
+            // ignore, it will be retried
+        }
+    }
+}
+
+// 解析 <resultMap /> 节点
+private ResultMap resultMapElement(XNode resultMapNode) throws Exception {
+    return resultMapElement(resultMapNode, Collections.<ResultMapping>emptyList());
+}
+
+// 解析 <resultMap /> 节点
+private ResultMap resultMapElement(XNode resultMapNode, List<ResultMapping> additionalResultMappings) throws Exception {
+    ErrorContext.instance().activity("processing " + resultMapNode.getValueBasedIdentifier());
+    // <1> 获得 id 属性
+    String id = resultMapNode.getStringAttribute("id",
+            resultMapNode.getValueBasedIdentifier());
+    // <1> 获得 type 属性
+    String type = resultMapNode.getStringAttribute("type",
+            resultMapNode.getStringAttribute("ofType",
+                    resultMapNode.getStringAttribute("resultType",
+                            resultMapNode.getStringAttribute("javaType"))));
+    // <1> 获得 extends 属性
+    String extend = resultMapNode.getStringAttribute("extends");
+    // <1> 获得 autoMapping 属性
+    Boolean autoMapping = resultMapNode.getBooleanAttribute("autoMapping");
+    // <1> 解析 type 对应的类
+    Class<?> typeClass = resolveClass(type);
+    Discriminator discriminator = null;
+    // <2> 创建 ResultMapping 集合
+    List<ResultMapping> resultMappings = new ArrayList<>();
+    resultMappings.addAll(additionalResultMappings);
+    // <2> 遍历 <resultMap /> 的子节点
+    List<XNode> resultChildren = resultMapNode.getChildren();
+    for (XNode resultChild : resultChildren) {
+        // <2.1> 处理 <constructor /> 节点
+        if ("constructor".equals(resultChild.getName())) {
+            processConstructorElement(resultChild, typeClass, resultMappings);
+        // <2.2> 处理 <discriminator /> 节点
+        } else if ("discriminator".equals(resultChild.getName())) {
+            discriminator = processDiscriminatorElement(resultChild, typeClass, resultMappings);
+        // <2.3> 处理其它节点
+        } else {
+            List<ResultFlag> flags = new ArrayList<>();
+            if ("id".equals(resultChild.getName())) {
+                flags.add(ResultFlag.ID);
+            }
+            resultMappings.add(buildResultMappingFromContext(resultChild, typeClass, flags));
+        }
+    }
+    // <3> 创建 ResultMapResolver 对象，执行解析
+    ResultMapResolver resultMapResolver = new ResultMapResolver(builderAssistant, id, typeClass, extend, discriminator, resultMappings, autoMapping);
+    try {
+        return resultMapResolver.resolve();
+    } catch (IncompleteElementException e) {
+        // <4> 解析失败，添加到 configuration 中
+        configuration.addIncompleteResultMap(resultMapResolver);
+        throw e;
+    }
+}
+````
+
+#### 15.1.3.4 sqlElement ####
+sqlElement(List<XNode> list) 方法，解析 <sql /> 节点们。
+
+#### 15.1.3.5 buildStatementFromContext ####
+buildStatementFromContext(List<XNode> list) 方法，解析 <select />、<insert />、<update />、<delete /> 节点们。
+
+### 15.1.4 bindMapperForNamespace ###
+bindMapperForNamespace() 方法，绑定 Mapper 。
+
+### 15.1.5 parsePendingXXX ###
+
+三个方法的逻辑思路基本一致：1）获得对应的集合；2）遍历集合，执行解析；3）执行成功，则移除出集合；4）执行失败，忽略异常。
+
+## 15.2 MapperBuilderAssistant ##
+org.apache.ibatis.builder.MapperBuilderAssistant ，继承 BaseBuilder 抽象类，Mapper 构造器的小助手，提供了一些公用的方法，例如创建 ParameterMap、MappedStatement 对象等等。
+
+### 15.2.1 构造方法 ###
+````
+/**
+ * 当前 Mapper 命名空间
+ */
+private String currentNamespace;
+/**
+ * 资源引用的地址
+ */
+private final String resource;
+/**
+ * 当前 Cache 对象
+ */
+private Cache currentCache;
+/**
+ * 是否未解析成功 Cache 引用
+ */
+private boolean unresolvedCacheRef; // issue #676
+
+public MapperBuilderAssistant(Configuration configuration, String resource) {
+    super(configuration);
+    ErrorContext.instance().resource(resource);
+    this.resource = resource;
+}
+````
+
+### 15.2.2 setCurrentNamespace ###
+setCurrentNamespace(String currentNamespace) 方法，设置 currentNamespace 属性。
+
+### 15.2.3 useCacheRef ###
+useCacheRef(String namespace) 方法，获得指向的 Cache 对象。如果获得不到，则抛出 IncompleteElementException 异常。
 
 
 
