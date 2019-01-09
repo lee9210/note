@@ -393,4 +393,211 @@ convertArgsToSqlCommandParam(Object[] args) 方法，获得 SQL 通用参数。
 对应 mapping 模块，主要为 SQL 操作解析后的映射。
 
 MyBatis 的初始化流程的入口是 SqlSessionFactoryBuilder 的 #build(Reader reader, String environment, Properties properties) 方法
+
+## 14.1 BaseBuilder ##
+org.apache.ibatis.builder.BaseBuilder ，基础构造器抽象类，为子类提供通用的工具类。
+
+### 14.1.1 构造方法 ###
+````
+/**
+ * MyBatis Configuration 对象
+ */
+protected final Configuration configuration;
+protected final TypeAliasRegistry typeAliasRegistry;
+protected final TypeHandlerRegistry typeHandlerRegistry;
+
+public BaseBuilder(Configuration configuration) {
+    this.configuration = configuration;
+    this.typeAliasRegistry = this.configuration.getTypeAliasRegistry();
+    this.typeHandlerRegistry = this.configuration.getTypeHandlerRegistry();
+}
+````
+configuration 属性，MyBatis Configuration 对象。XML 和注解中解析到的配置，最终都会设置到 org.apache.ibatis.session.Configuration 中。
+
+### 14.1.2 parseExpression ###
+parseExpression(String regex, String defaultValue) 方法，创建正则表达式。
+
+
+### 14.1.3 xxxValueOf ###
+xxxValueOf(...) 方法，将字符串转换成对应的数据类型的值。
+
+### 14.1.4 resolveJdbcType ###
+resolveJdbcType(String alias) 方法，解析对应的 JdbcType 类型。
+````
+protected JdbcType resolveJdbcType(String alias) {
+    if (alias == null) {
+        return null;
+    }
+    try {
+        return JdbcType.valueOf(alias);
+    } catch (IllegalArgumentException e) {
+        throw new BuilderException("Error resolving JdbcType. Cause: " + e, e);
+    }
+}
+````
+
+### 14.1.5 resolveResultSetType ###
+resolveResultSetType(String alias) 方法，解析对应的 ResultSetType 类型。
+
+````
+protected ResultSetType resolveResultSetType(String alias) {
+    if (alias == null) {
+        return null;
+    }
+    try {
+        return ResultSetType.valueOf(alias);
+    } catch (IllegalArgumentException e) {
+        throw new BuilderException("Error resolving ResultSetType. Cause: " + e, e);
+    }
+}
+````
+### 14.1.6 resolveParameterMode ###
+resolveParameterMode(String alias) 方法，解析对应的 ParameterMode 类型。
+
+### 14.1.7 createInstance ###
+createInstance(String alias) 方法，创建指定对象。
+
+### 14.1.8 resolveTypeHandler ###
+resolveTypeHandler(Class<?> javaType, String typeHandlerAlias) 方法，从 typeHandlerRegistry 中获得或创建对应的 TypeHandler 对象。
+
+## 14.2 XMLConfigBuilder ##
+org.apache.ibatis.builder.xml.XMLConfigBuilder ，继承 BaseBuilder 抽象类，XML 配置构建器，主要负责解析 mybatis-config.xml 配置文件。
+
+### 14.2.1 构造方法 ###
+````
+/**
+ * 是否已解析
+ */
+private boolean parsed;
+/**
+ * 基于 Java XPath 解析器
+ */
+private final XPathParser parser;
+/**
+ * 环境
+ */
+private String environment;
+/**
+ * ReflectorFactory 对象
+ */
+private final ReflectorFactory localReflectorFactory = new DefaultReflectorFactory();
+private XMLConfigBuilder(XPathParser parser, String environment, Properties props) {
+    // <1> 创建 Configuration 对象
+    super(new Configuration());
+    ErrorContext.instance().resource("SQL Mapper Configuration");
+    // <2> 设置 Configuration 的 variables 属性
+    this.configuration.setVariables(props);
+    this.parsed = false;
+    this.environment = environment;
+    this.parser = parser;
+}
+````
+
+### 14.2.2 parse ###
+parse() 方法，解析 XML 成 Configuration 对象。
+
+
+### 14.2.3 parseConfiguration ###
+parseConfiguration(XNode root) 方法，解析 <configuration /> 节点。
+
+````
+private void parseConfiguration(XNode root) {
+    try {
+        // <1> 解析 <properties /> 标签
+        propertiesElement(root.evalNode("properties"));
+        // <2> 解析 <settings /> 标签
+        Properties settings = settingsAsProperties(root.evalNode("settings"));
+        // <3> 加载自定义 VFS 实现类
+        loadCustomVfs(settings);
+        // <4> 解析 <typeAliases /> 标签
+        typeAliasesElement(root.evalNode("typeAliases"));
+        // <5> 解析 <plugins /> 标签
+        pluginElement(root.evalNode("plugins"));
+        // <6> 解析 <objectFactory /> 标签
+        objectFactoryElement(root.evalNode("objectFactory"));
+        // <7> 解析 <objectWrapperFactory /> 标签
+        objectWrapperFactoryElement(root.evalNode("objectWrapperFactory"));
+        // <8> 解析 <reflectorFactory /> 标签
+        reflectorFactoryElement(root.evalNode("reflectorFactory"));
+        // <9> 赋值 <settings /> 到 Configuration 属性
+        settingsElement(settings);
+        // read it after objectFactory and objectWrapperFactory issue #631
+        // <10> 解析 <environments /> 标签
+        environmentsElement(root.evalNode("environments"));
+        // <11> 解析 <databaseIdProvider /> 标签
+        databaseIdProviderElement(root.evalNode("databaseIdProvider"));
+        // <12> 解析 <typeHandlers /> 标签
+        typeHandlerElement(root.evalNode("typeHandlers"));
+        // <13> 解析 <mappers /> 标签
+        mapperElement(root.evalNode("mappers"));
+    } catch (Exception e) {
+        throw new BuilderException("Error parsing SQL Mapper Configuration. Cause: " + e, e);
+    }
+}
+````
+
+#### 14.2.3.1 propertiesElement ####
+
+propertiesElement(XNode context) 方法，解析 <properties /> 节点。大体逻辑如下：
+1. 解析 <properties /> 标签，成 Properties 对象。
+2. 覆盖 configuration 中的 Properties 对象到上面的结果。
+3. 设置结果到 parser 和 configuration 中。
+
+#### 14.2.3.2 settingsAsProperties ####
+settingsElement(Properties props) 方法，将 <setting /> 标签解析为 Properties 对象。
+
+#### 14.2.3.3 loadCustomVfs ####
+loadCustomVfs(Properties settings) 方法，加载自定义 VFS 实现类。
+
+#### 14.2.3.4 typeAliasesElement ####
+typeAliasesElement(XNode parent) 方法，解析 <typeAliases /> 标签，将配置类注册到 typeAliasRegistry 中。
+
+#### 14.2.3.5 pluginElement ####
+pluginElement(XNode parent) 方法，解析 <plugins /> 标签，添加到 Configuration#interceptorChain 中。
+
+#### 14.2.3.6 objectFactoryElement ####
+objectFactoryElement(XNode parent) 方法，解析 <objectFactory /> 节点。
+
+#### 14.2.3.7 objectWrapperFactoryElement ####
+objectWrapperFactoryElement(XNode context) 方法，解析 <objectWrapperFactory /> 节点。
+
+#### 14.2.3.8 reflectorFactoryElement ####
+reflectorFactoryElement(XNode parent) 方法，解析 <reflectorFactory /> 节点。
+
+#### 14.2.3.9 settingsElement ####
+settingsElement(Properties props) 方法，赋值 <settings /> 到 Configuration 属性。
+
+#### 14.2.3.10 environmentsElement ####
+environmentsElement(XNode context) 方法，解析 <environments /> 标签。
+
+#### 14.2.3.11 databaseIdProviderElement ####
+databaseIdProviderElement(XNode context) 方法，解析 <databaseIdProvider /> 标签。
+
+#### 14.2.3.12 typeHandlerElement ####
+typeHandlerElement(XNode parent) 方法，解析 <typeHandlers /> 标签。
+
+#### 14.2.3.13 mapperElement ####
+mapperElement(XNode context) 方法，解析 <mappers /> 标签。
+
+----
+
+# 15 MyBatis 初始化（二）之加载 Mapper 映射配置文件 #
+
+mapper文件的解析结果映射:
+
+![](/picture/mybatis-mapper-map-result.png)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ----
