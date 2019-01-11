@@ -2228,13 +2228,483 @@ ContextAccessor ，是 DynamicContext 的内部静态类，实现 ognl.PropertyA
 
 org.apache.ibatis.scripting.xmltags.SqlNode ，SQL Node 接口，每个 XML Node 会解析成对应的 SQL Node 对象。
 
+### 18.5.1 VarDeclSqlNode ###
+org.apache.ibatis.scripting.xmltags.VarDeclSqlNode ，实现 SqlNode 接口，<bind /> 标签的 SqlNode 实现类。
 
+````
+public class VarDeclSqlNode implements SqlNode {
 
+    /** 名字 */
+    private final String name;
+    /** 表达式 */
+    private final String expression;
 
+    public VarDeclSqlNode(String var, String exp) {
+        name = var;
+        expression = exp;
+    }
+    @Override
+    public boolean apply(DynamicContext context) {
+        // 调用 OgnlCache#getValue(String expression, Object root) 方法，获得表达式对应的值。
+        final Object value = OgnlCache.getValue(expression, context.getBindings());
+        // 调用 DynamicContext#bind(String name, Object value) 方法，绑定到上下文。
+        context.bind(name, value);
+        return true;
+    }
+}
+````
 
+### 18.5.2 TrimSqlNode ###
+org.apache.ibatis.scripting.xmltags.TrimSqlNode ，实现 SqlNode 接口，<trim /> 标签的 SqlNode 实现类。
 
+#### 18.5.2.1 构造方法 ####
+````
+/**
+ * 内含的 SqlNode 节点
+ */
+private final SqlNode contents;
+/**
+ * 前缀
+ */
+private final String prefix;
+/**
+ * 后缀
+ */
+private final String suffix;
+/**
+ * 需要被删除的前缀
+ */
+private final List<String> prefixesToOverride;
+/**
+ * 需要被删除的后缀
+ */
+private final List<String> suffixesToOverride;
+private final Configuration configuration;
 
+public TrimSqlNode(Configuration configuration, SqlNode contents, String prefix, String prefixesToOverride, String suffix, String suffixesToOverride) {
+    this(configuration, contents, prefix, parseOverrides(prefixesToOverride), suffix, parseOverrides(suffixesToOverride));
+}
 
+protected TrimSqlNode(Configuration configuration, SqlNode contents, String prefix, List<String> prefixesToOverride, String suffix, List<String> suffixesToOverride) {
+    this.contents = contents;
+    this.prefix = prefix;
+    this.prefixesToOverride = prefixesToOverride;
+    this.suffix = suffix;
+    this.suffixesToOverride = suffixesToOverride;
+    this.configuration = configuration;
+}
+````
+parseOverrides(String overrides) 方法，使用 | 分隔字符串成字符串数组，并都转换成大写。
+
+#### 18.5.2.2 apply ####
+````
+@Override
+public boolean apply(DynamicContext context) {
+    // <1> 创建 FilteredDynamicContext 对象
+    FilteredDynamicContext filteredDynamicContext = new FilteredDynamicContext(context);
+    // <2> 执行 contents 的应用
+    boolean result = contents.apply(filteredDynamicContext);
+    // <3> 执行 FilteredDynamicContext 的应用
+    filteredDynamicContext.applyAll();
+    return result;
+}
+````
+
+#### 18.5.2.3 FilteredDynamicContext ####
+FilteredDynamicContext ，是 TrimSqlNode 的内部类，继承 DynamicContext 类，支持 trim 逻辑的 DynamicContext 实现类。
+
+### 18.5.3 WhereSqlNode ###
+org.apache.ibatis.scripting.xmltags.WhereSqlNode ，继承 TrimSqlNode 类，<where /> 标签的 SqlNode 实现类。
+
+### 18.5.4 SetSqlNode ###
+org.apache.ibatis.scripting.xmltags.SetSqlNode ，继承 TrimSqlNode 类，<set /> 标签的 SqlNode 实现类。
+
+### 18.5.5 ForEachSqlNode ###
+org.apache.ibatis.scripting.xmltags.ForEachSqlNode ，实现 SqlNode 接口，<foreach /> 标签的 SqlNode 实现类。
+
+#### 18.5.5.1 构造方法 ####
+````
+private final ExpressionEvaluator evaluator;
+/**
+ * 集合的表达式
+ */
+private final String collectionExpression;
+private final SqlNode contents;
+private final String open;
+private final String close;
+private final String separator;
+/**
+ * 集合项
+ */
+private final String item;
+/**
+ * 索引变量
+ */
+private final String index;
+private final Configuration configuration;
+
+public ForEachSqlNode(Configuration configuration, SqlNode contents, String collectionExpression, String index, String item, String open, String close, String separator) {
+    this.evaluator = new ExpressionEvaluator();
+    this.collectionExpression = collectionExpression;
+    this.contents = contents;
+    this.open = open;
+    this.close = close;
+    this.separator = separator;
+    this.index = index;
+    this.item = item;
+    this.configuration = configuration;
+}
+````
+
+#### 18.5.5.2 apply ####
+````
+@Override
+public boolean apply(DynamicContext context) {
+    Map<String, Object> bindings = context.getBindings();
+    // <1> 获得遍历的集合的 Iterable 对象，用于遍历。
+    final Iterable<?> iterable = evaluator.evaluateIterable(collectionExpression, bindings);
+    if (!iterable.iterator().hasNext()) {
+        return true;
+    }
+    boolean first = true;
+    // <2> 添加 open 到 SQL 中
+    applyOpen(context);
+    int i = 0;
+    for (Object o : iterable) {
+        // <3> 记录原始的 context 对象
+        DynamicContext oldContext = context;
+        // <4> 生成新的 context
+        if (first || separator == null) {
+            context = new PrefixedContext(context, "");
+        } else {
+            context = new PrefixedContext(context, separator);
+        }
+        // <5> 获得唯一编号
+        int uniqueNumber = context.getUniqueNumber();
+        // Issue #709
+        // <6> 绑定到 context 中
+        if (o instanceof Map.Entry) {
+            @SuppressWarnings("unchecked")
+            Map.Entry<Object, Object> mapEntry = (Map.Entry<Object, Object>) o;
+            applyIndex(context, mapEntry.getKey(), uniqueNumber);
+            applyItem(context, mapEntry.getValue(), uniqueNumber);
+        } else {
+            applyIndex(context, i, uniqueNumber);
+            applyItem(context, o, uniqueNumber);
+        }
+        // <7> 执行 contents 的应用
+        contents.apply(new FilteredDynamicContext(configuration, context, index, item, uniqueNumber));
+        // <8> 判断 prefix 是否已经插入
+        if (first) {
+            first = !((PrefixedContext) context).isPrefixApplied();
+        }
+        // <9> 恢复原始的 context 对象
+        context = oldContext;
+        i++;
+    }
+    // <10> 添加 close 到 SQL 中
+    applyClose(context);
+    // <11> 移除 index 和 item 对应的绑定
+    context.getBindings().remove(item);
+    context.getBindings().remove(index);
+    return true;
+}
+````
+
+例如一个查询的sql为：
+````
+<select id="getSubjectList" parameterType="List" resultType="List">
+    SELECT id FROM subject
+    WHERE id IN
+      <foreach collection="ids" index="idx" item="item" open="("  close=")" separator=",">
+          #{item}
+      </foreach>
+</select>
+````
+生成的变量模型为：
+![](/picture/mybatis-foreach-rumtime-map.png)
+
+#### 18.5.5.3 PrefixedContext ####
+PrefixedContext ，是 ForEachSqlNode 的内部类，继承 DynamicContext 类，支持添加 <foreach /> 标签中，多个元素之间的分隔符的 DynamicContext 实现类。
+
+prefix 属性，虽然属性命名上是 prefix ，但是对应到 ForEachSqlNode 的 separator 属性。
+重心在于 #appendSql(String sql) 方法的实现。逻辑还是比较简单的，就是判断之前是否添加过 prefix ，没有就进行添加。而判断的依据，就是 prefixApplied 标识。
+
+### 18.5.6 IfSqlNode ###
+org.apache.ibatis.scripting.xmltags.IfSqlNode ，实现 SqlNode 接口，<if /> 标签的 SqlNode 实现类。
+
+````
+public class IfSqlNode implements SqlNode {
+
+    private final ExpressionEvaluator evaluator;
+    /**
+     * 判断表达式
+     */
+    private final String test;
+    /**
+     * 内嵌的 SqlNode 节点
+     */
+    private final SqlNode contents;
+
+    public IfSqlNode(SqlNode contents, String test) {
+        this.test = test;
+        this.contents = contents;
+        this.evaluator = new ExpressionEvaluator();
+    }
+
+    @Override
+    public boolean apply(DynamicContext context) {
+        // 调用 ExpressionEvaluator#evaluateBoolean(String expression, Object parameterObject) 方法，判断是否符合条件。
+        if (evaluator.evaluateBoolean(test, context.getBindings())) {
+            // 如果符合条件，则执行 contents 的应用，并返回成功 true 。
+            contents.apply(context);
+            // 返回成功
+            return true;
+        }
+        // 如果不符条件，则返回失败 false 。
+        return false;
+    }
+}
+````
+
+### 18.5.7 ChooseSqlNode ###
+org.apache.ibatis.scripting.xmltags.ChooseSqlNode ，实现 SqlNode 接口，<choose /> 标签的 SqlNode 实现类。
+
+````
+public class ChooseSqlNode implements SqlNode {
+
+    /**
+     * <otherwise /> 标签对应的 SqlNode 节点
+     */
+    private final SqlNode defaultSqlNode;
+    /**
+     * <when /> 标签对应的 SqlNode 节点数组
+     */
+    private final List<SqlNode> ifSqlNodes;
+
+    public ChooseSqlNode(List<SqlNode> ifSqlNodes, SqlNode defaultSqlNode) {
+        this.ifSqlNodes = ifSqlNodes;
+        this.defaultSqlNode = defaultSqlNode;
+    }
+    @Override
+    public boolean apply(DynamicContext context) {
+        // 判断 <when /> 标签中，是否有符合条件的节点。如果有，则进行应用。并且只因应用一个 SqlNode 对象。这里，我们就看到了，SqlNode#apply(context) 方法，返回 true 或 false 的用途了。
+        // 如果有，则进行应用。并且只因应用一个 SqlNode 对象
+        for (SqlNode sqlNode : ifSqlNodes) {
+            if (sqlNode.apply(context)) {
+                return true;
+            }
+        }
+        // 再判断 <otherwise /> 标签，是否存在。如果存在，则进行应用。
+        // 如果存在，则进行应用
+        if (defaultSqlNode != null) {
+            defaultSqlNode.apply(context);
+            return true;
+        }
+        // 返回都失败。
+        return false;
+    }
+}
+````
+
+### 18.5.8 StaticTextSqlNode ###
+org.apache.ibatis.scripting.xmltags.StaticTextSqlNode ，实现 SqlNode 接口，静态文本的 SqlNode 实现类。
+````
+public class StaticTextSqlNode implements SqlNode {
+
+    /**
+     * 静态文本
+     */
+    private final String text;
+
+    public StaticTextSqlNode(String text) {
+        this.text = text;
+    }
+    @Override
+    public boolean apply(DynamicContext context) {
+        // 直接拼接到 context 中
+        context.appendSql(text);
+        return true;
+    }
+}
+````
+
+### 18.5.9 TextSqlNode ###
+
+org.apache.ibatis.scripting.xmltags.TextSqlNode ，实现 SqlNode 接口，文本的 SqlNode 实现类。相比 StaticTextSqlNode 的实现来说，TextSqlNode 不确定是否为静态文本，所以提供 #isDynamic() 方法，进行判断是否为动态文本。
+
+#### 18.5.9.1 构造方法 ####
+````
+/**
+ * 文本
+ */
+private final String text;
+/**
+ * 目前该属性只在单元测试中使用，暂时无视
+ */
+private final Pattern injectionFilter;
+
+public TextSqlNode(String text) {
+    this(text, null);
+}
+public TextSqlNode(String text, Pattern injectionFilter) {
+    this.text = text;
+    this.injectionFilter = injectionFilter;
+}
+````
+
+#### 18.5.9.2 isDynamic ####
+isDynamic() 方法，判断是否为动态文本。
+````
+public boolean isDynamic() {
+    // <1> 创建 DynamicCheckerTokenParser 对象
+    DynamicCheckerTokenParser checker = new DynamicCheckerTokenParser();
+    // <2> 创建 GenericTokenParser 对象
+    GenericTokenParser parser = createParser(checker);
+    // <3> 执行解析
+    parser.parse(text);
+    // <4> 判断是否为动态文本
+    return checker.isDynamic();
+}
+```
+#### 18.5.9.3 apply ####
+
+````
+@Override
+public boolean apply(DynamicContext context) {
+    // <1> 创建 BindingTokenParser 对象
+    // <2> 创建 GenericTokenParser 对象
+    GenericTokenParser parser = createParser(new BindingTokenParser(context, injectionFilter));
+    // <3> 执行解析
+    // <4> 将解析的结果，添加到 context 中
+    context.appendSql(parser.parse(text));
+    return true;
+}
+````
+**最终的结果是把xml文件的内容解析成对象，以及表达式，在调用的时候，根据对象和表达式动态生成sql**
+
+### 18.5.10 MixedSqlNode ###
+
+org.apache.ibatis.scripting.xmltags.MixedSqlNode ，实现 SqlNode 接口，混合的 SqlNode 实现类
+
+## 18.6 OGNL 相关 ##
+### 18.6.1 OgnlCache ###
+org.apache.ibatis.scripting.xmltags.OgnlCache ，OGNL 缓存类。
+
+````
+public final class OgnlCache {
+
+    /** OgnlMemberAccess 单例 */
+    private static final OgnlMemberAccess MEMBER_ACCESS = new OgnlMemberAccess();
+    /** OgnlClassResolver 单例 */
+    private static final OgnlClassResolver CLASS_RESOLVER = new OgnlClassResolver();
+
+    /**
+     * 表达式的缓存的映射
+     * KEY：表达式
+     * VALUE：表达式的缓存 @see #parseExpression(String)
+     */
+    private static final Map<String, Object> expressionCache = new ConcurrentHashMap<>();
+
+    private OgnlCache() {
+        // Prevent Instantiation of Static Class
+    }
+
+    public static Object getValue(String expression, Object root) {
+        try {
+            // <1> 创建 OGNL Context 对象
+            Map context = Ognl.createDefaultContext(root, MEMBER_ACCESS, CLASS_RESOLVER, null);
+            // <2> 解析表达式
+            // <3> 获得表达式对应的值
+            return Ognl.getValue(parseExpression(expression), context, root);
+        } catch (OgnlException e) {
+            throw new BuilderException("Error evaluating expression '" + expression + "'. Cause: " + e, e);
+        }
+    }
+
+    private static Object parseExpression(String expression) throws OgnlException {
+        Object node = expressionCache.get(expression);
+        if (node == null) {
+            node = Ognl.parseExpression(expression);
+            expressionCache.put(expression, node);
+        }
+        return node;
+    }
+}
+````
+
+### 18.6.2 OgnlMemberAccess ###
+org.apache.ibatis.scripting.xmltags.OgnlMemberAccess，实现 ognl.MemberAccess 接口，OGNL 成员访问器实现类。
+
+### 18.6.3 OgnlClassResolver ###
+org.apache.ibatis.scripting.xmltags.OgnlClassResolver，继承 ognl.DefaultClassResolver 类，OGNL 类解析器实现类。
+
+### 18.6.4 ExpressionEvaluator ###
+org.apache.ibatis.scripting.xmltags.ExpressionEvaluator ，OGNL 表达式计算器。
+
+````
+public class ExpressionEvaluator {
+
+    /**
+     * 判断表达式对应的值，是否为 true
+     *
+     * @param expression 表达式
+     * @param parameterObject 参数对象
+     * @return 是否为 true
+     */
+    public boolean evaluateBoolean(String expression, Object parameterObject) {
+        // 获得表达式对应的值
+        Object value = OgnlCache.getValue(expression, parameterObject);
+        // 如果是 Boolean 类型，直接判断
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        // 如果是 Number 类型，则判断不等于 0
+        if (value instanceof Number) {
+            return new BigDecimal(String.valueOf(value)).compareTo(BigDecimal.ZERO) != 0;
+        }
+        // 如果是其它类型，判断非空
+        return value != null;
+    }
+
+    /**
+     * 获得表达式对应的集合
+     *
+     * @param expression 表达式
+     * @param parameterObject 参数对象
+     * @return 迭代器对象
+     */
+    public Iterable<?> evaluateIterable(String expression, Object parameterObject) {
+        // 获得表达式对应的值
+        Object value = OgnlCache.getValue(expression, parameterObject);
+        if (value == null) {
+            throw new BuilderException("The expression '" + expression + "' evaluated to a null value.");
+        }
+        // 如果是 Iterable 类型，直接返回
+        if (value instanceof Iterable) {
+            return (Iterable<?>) value;
+        }
+        // 如果是数组类型，则返回数组
+        if (value.getClass().isArray()) {
+            // the array may be primitive, so Arrays.asList() may throw
+            // a ClassCastException (issue 209).  Do the work manually
+            // Curse primitives! :) (JGB)
+            int size = Array.getLength(value);
+            List<Object> answer = new ArrayList<>();
+            for (int i = 0; i < size; i++) {
+                Object o = Array.get(value, i);
+                answer.add(o);
+            }
+            return answer;
+        }
+        // 如果是 Map 类型，则返回 Map.entrySet 集合
+        if (value instanceof Map) {
+            return ((Map) value).entrySet();
+        }
+        throw new BuilderException("Error evaluating expression '" + expression + "'.  Return value (" + value + ") was not iterable.");
+    }
+}
+````
 
 
 
