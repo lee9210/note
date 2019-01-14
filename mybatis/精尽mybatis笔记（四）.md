@@ -1425,6 +1425,64 @@ public TransactionalCache(Cache delegate) {
     this.entriesMissedInCache = new HashSet<>();
 }
 ````
+- 在事务未提交时，entriesToAddOnCommit 属性，会暂存当前事务新产生的缓存 KV 对。
+- 在事务提交时，entriesToAddOnCommit 属性，会同步到二级缓存 delegate 中。
+
+#### 20.6.3.2 getObject ####
+````
+@Override
+public Object getObject(Object key) {
+    // <1> 从 delegate 中获取 key 对应的 value
+    Object object = delegate.getObject(key);
+    // <2> 如果不存在，则添加到 entriesMissedInCache 中
+    if (object == null) {
+        entriesMissedInCache.add(key);
+    }
+    // issue #146
+    // <3> 如果 clearOnCommit 为 true ，表示处于持续清空状态，则返回 null
+    if (clearOnCommit) {
+        return null;
+    // <4> 返回 value
+    } else {
+        return object;
+    }
+}
+````
+
+#### 20.6.3.3 putObject ####
+putObject(Object key, Object object) 方法，暂存 KV 到 entriesToAddOnCommit 中。
+
+
+#### 20.6.3.6 commit ####
+
+````
+public void commit() {
+    // <1> 如果 clearOnCommit 为 true ，则清空 delegate 缓存
+    if (clearOnCommit) {
+        delegate.clear();
+    }
+    // 将 entriesToAddOnCommit、entriesMissedInCache 刷入 delegate 中
+    flushPendingEntries();
+    // 重置
+    reset();
+}
+````
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
