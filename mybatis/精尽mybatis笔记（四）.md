@@ -2190,15 +2190,3 @@ private void handleMultipleProperties(String[] keyProperties,
 
 ## 22.4 NoKeyGenerator ##
 org.apache.ibatis.executor.keygen.NoKeyGenerator ，实现 KeyGenerator 接口，空的 KeyGenerator 实现类，即无需主键生成。
-
-
-
-
-
-
-
-
-
-
-
--------
