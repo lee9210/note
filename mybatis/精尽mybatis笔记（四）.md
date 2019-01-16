@@ -1468,13 +1468,728 @@ public void commit() {
 }
 ````
 
+### 20.7 创建 Executor 对象 ###
+Configuration 类中，提供 #newExecutor(Transaction transaction, ExecutorType executorType) 方法
+
+````
+/**
+ * 创建 Executor 对象
+ *
+ * @param transaction 事务对象
+ * @param executorType 执行器类型
+ * @return Executor 对象
+ */
+public Executor newExecutor(Transaction transaction, ExecutorType executorType) {
+    // <1> 获得执行器类型
+    executorType = executorType == null ? defaultExecutorType : executorType; // 使用默认
+    executorType = executorType == null ? ExecutorType.SIMPLE : executorType; // 使用 ExecutorType.SIMPLE
+    // <2> 创建对应实现的 Executor 对象
+    Executor executor;
+    if (ExecutorType.BATCH == executorType) {
+        executor = new BatchExecutor(this, transaction);
+    } else if (ExecutorType.REUSE == executorType) {
+        executor = new ReuseExecutor(this, transaction);
+    } else {
+        executor = new SimpleExecutor(this, transaction);
+    }
+    // <3> 如果开启缓存，创建 CachingExecutor 对象，进行包装
+    if (cacheEnabled) {
+        executor = new CachingExecutor(executor);
+    }
+    // <4> 应用插件
+    executor = (Executor) interceptorChain.pluginAll(executor);
+    return executor;
+}
+````
+
+## 20.8 ClosedExecutor ##
+在 ResultLoaderMap 类中，有一个 ClosedExecutor 内部静态类，继承 BaseExecutor 抽象类，已经关闭的 Executor 实现类。
+仅仅在 ResultLoaderMap 中，作为一个“空”的 Executor 对象。没有什么特殊的意义和用途。
+
+## 20.9 ErrorContext ##
+org.apache.ibatis.executor.ErrorContext ，错误上下文，负责记录错误日志。
+
+----
+
+# 21 SQL 执行（二）之 StatementHandler #
+
+## 21.1 概述 ##
+整体是以 StatementHandler 为核心
+
+statementHandler在整个sql执行的流程中所处的位置为：
+![](/picture/mybatis-sql-excute-flow.png)
+
+## 21.2 StatementHandler ##
+org.apache.ibatis.executor.statement.StatementHandler ，Statement 处理器，其中 Statement 包含 java.sql.Statement、java.sql.PreparedStatement、java.sql.CallableStatement 三种。
+
+````
+public interface StatementHandler {
+
+    /**
+     * 准备操作，可以理解成创建 Statement 对象
+     *
+     * @param connection         Connection 对象
+     * @param transactionTimeout 事务超时时间
+     * @return Statement 对象
+     */
+    Statement prepare(Connection connection, Integer transactionTimeout) throws SQLException;
+
+    /**
+     * 设置 Statement 对象的参数
+     *
+     * @param statement Statement 对象
+     */
+    void parameterize(Statement statement) throws SQLException;
+    
+    /**
+     * 添加 Statement 对象的批量操作
+     *
+     * @param statement Statement 对象
+     */
+    void batch(Statement statement) throws SQLException;
+    /**
+     * 执行写操作
+     *
+     * @param statement Statement 对象
+     * @return 影响的条数
+     */
+    int update(Statement statement) throws SQLException;
+    /**
+     * 执行读操作
+     *
+     * @param statement Statement 对象
+     * @param resultHandler ResultHandler 对象，处理结果
+     * @param <E> 泛型
+     * @return 读取的结果
+     */
+    <E> List<E> query(Statement statement, ResultHandler resultHandler) throws SQLException;
+    /**
+     * 执行读操作，返回 Cursor 对象
+     *
+     * @param statement Statement 对象
+     * @param <E> 泛型
+     * @return Cursor 对象
+     */
+    <E> Cursor<E> queryCursor(Statement statement) throws SQLException;
+
+    /**
+     * @return BoundSql 对象
+     */
+    BoundSql getBoundSql();
+    /**
+     * @return ParameterHandler 对象
+     */
+    ParameterHandler getParameterHandler();
+
+}
+````
+
+## 21.3 RoutingStatementHandler ##
+org.apache.ibatis.executor.statement.RoutingStatementHandler ，实现 StatementHandler 接口，路由的 StatementHandler 对象，根据 Statement 类型，转发到对应的 StatementHandler 实现类中。
+
+### 21.3.1 构造方法 ###
+````
+/**
+ * 被委托的 StatementHandler 对象
+ */
+private final StatementHandler delegate;
+
+public RoutingStatementHandler(Executor executor, MappedStatement ms, Object parameter, RowBounds rowBounds, ResultHandler resultHandler, BoundSql boundSql) {
+    // 根据不同的类型，创建对应的 StatementHandler 实现类
+    switch (ms.getStatementType()) {
+        case STATEMENT:
+            delegate = new SimpleStatementHandler(executor, ms, parameter, rowBounds, resultHandler, boundSql);
+            break;
+        case PREPARED:
+            delegate = new PreparedStatementHandler(executor, ms, parameter, rowBounds, resultHandler, boundSql);
+            break;
+        case CALLABLE:
+            delegate = new CallableStatementHandler(executor, ms, parameter, rowBounds, resultHandler, boundSql);
+            break;
+        default:
+            throw new ExecutorException("Unknown statement type: " + ms.getStatementType());
+    }
+}
+````
+
+### 21.3.2 实现方法 ###
+所有的实现方法，调用 delegate 对应的方法即可
+
+## 21.4 BaseStatementHandler ##
+org.apache.ibatis.executor.statement.BaseStatementHandler ，实现 StatementHandler 接口，StatementHandler 基类，提供骨架方法，从而使子类只要实现指定的几个抽象方法即可
+
+### 21.4.1 构造方法 ###
+
+````
+protected final Configuration configuration;
+protected final ObjectFactory objectFactory;
+protected final TypeHandlerRegistry typeHandlerRegistry;
+protected final ResultSetHandler resultSetHandler;
+protected final ParameterHandler parameterHandler;
+
+protected final Executor executor;
+protected final MappedStatement mappedStatement;
+protected final RowBounds rowBounds;
+
+protected BoundSql boundSql;
+
+protected BaseStatementHandler(Executor executor, MappedStatement mappedStatement, Object parameterObject, RowBounds rowBounds, ResultHandler resultHandler, BoundSql boundSql) {
+    // 获得 Configuration 对象
+    this.configuration = mappedStatement.getConfiguration();
+
+    this.executor = executor;
+    this.mappedStatement = mappedStatement;
+    this.rowBounds = rowBounds;
+
+    // 获得 TypeHandlerRegistry 和 ObjectFactory 对象
+    this.typeHandlerRegistry = configuration.getTypeHandlerRegistry();
+    this.objectFactory = configuration.getObjectFactory();
+
+    // <1> 如果 boundSql 为空，一般是写类操作，例如：insert、update、delete ，则先获得自增主键，然后再创建 BoundSql 对象
+    if (boundSql == null) { // issue #435, get the key before calculating the statement
+        // <1.1> 获得自增主键
+        generateKeys(parameterObject);
+        // <1.2> 创建 BoundSql 对象
+        boundSql = mappedStatement.getBoundSql(parameterObject);
+    }
+    this.boundSql = boundSql;
+
+    // <2> 创建 ParameterHandler 对象
+    this.parameterHandler = configuration.newParameterHandler(mappedStatement, parameterObject, boundSql);
+    // <3> 创建 ResultSetHandler 对象
+    this.resultSetHandler = configuration.newResultSetHandler(executor, mappedStatement, rowBounds, parameterHandler, resultHandler, boundSql);
+}
 
 
+@Override
+public int doUpdate(MappedStatement ms, Object parameter) throws SQLException {
+    Statement stmt = null;
+    try {
+        Configuration configuration = ms.getConfiguration();
+        // <x> 创建 StatementHandler 对象
+        StatementHandler handler = configuration.newStatementHandler(this, ms, parameter, RowBounds.DEFAULT, null, null);
+        // 初始化 StatementHandler 对象
+        stmt = prepareStatement(handler, ms.getStatementLog());
+        // 执行 StatementHandler ，进行写操作
+        return handler.update(stmt);
+    } finally {
+        // 关闭 StatementHandler 对象
+        closeStatement(stmt);
+    }
+}
 
 
+protected void generateKeys(Object parameter) {
+    // 获得 KeyGenerator 对象
+    KeyGenerator keyGenerator = mappedStatement.getKeyGenerator();
+    ErrorContext.instance().store();
+    // 前置处理，创建自增编号到 parameter 中
+    keyGenerator.processBefore(executor, mappedStatement, null, parameter);
+    ErrorContext.instance().recall();
+}
+````
+
+### 21.4.2 prepare ###
+
+````
+@Override
+public Statement prepare(Connection connection, Integer transactionTimeout) throws SQLException {
+    ErrorContext.instance().sql(boundSql.getSql());
+    Statement statement = null;
+    try {
+        // <1> 创建 Statement 对象
+        statement = instantiateStatement(connection);
+        // 设置超时时间
+        setStatementTimeout(statement, transactionTimeout);
+        // 设置 fetchSize
+        setFetchSize(statement);
+        return statement;
+    } catch (SQLException e) {
+        // 发生异常，进行关闭
+        closeStatement(statement);
+        throw e;
+    } catch (Exception e) {
+        // 发生异常，进行关闭
+        closeStatement(statement);
+        throw new ExecutorException("Error preparing statement.  Cause: " + e, e);
+    }
+}
+````
+
+## 21.5 SimpleStatementHandler ##
+org.apache.ibatis.executor.statement.SimpleStatementHandler ，继承 BaseStatementHandler 抽象类，java.sql.Statement 的 StatementHandler 实现类。
+
+### 21.5.1 构造方法 ###
+````
+public SimpleStatementHandler(Executor executor, MappedStatement mappedStatement, Object parameter, RowBounds rowBounds, ResultHandler resultHandler, BoundSql boundSql) {
+    super(executor, mappedStatement, parameter, rowBounds, resultHandler, boundSql);
+}
+````
+
+### 21.5.2 instantiateStatement ###
+instantiateStatement() 方法，创建 java.sql.Statement 对象
+````
+@Override
+protected Statement instantiateStatement(Connection connection) throws SQLException {
+    if (mappedStatement.getResultSetType() == ResultSetType.DEFAULT) {
+        return connection.createStatement();
+    } else {
+        return connection.createStatement(mappedStatement.getResultSetType().getValue(), ResultSet.CONCUR_READ_ONLY);
+    }
+}
+````
+
+### 21.5.4 query ###
+````
+@Override
+public <E> List<E> query(Statement statement, ResultHandler resultHandler) throws SQLException {
+    String sql = boundSql.getSql();
+    // <1> 执行查询
+    statement.execute(sql);
+    // <2> 处理返回结果
+    return resultSetHandler.handleResultSets(statement);
+}
+````
+
+### 21.5.5 queryCursor ###
+
+````
+@Override
+public <E> Cursor<E> queryCursor(Statement statement) throws SQLException {
+    String sql = boundSql.getSql();
+    // <1> 执行查询
+    statement.execute(sql);
+    // <2> 处理返回的 Cursor 结果
+    return resultSetHandler.handleCursorResultSets(statement);
+}
+````
+
+### 21.5.6 batch ###
+````
+@Override
+public void batch(Statement statement) throws SQLException {
+    String sql = boundSql.getSql();
+    // 添加到批处理
+    statement.addBatch(sql);
+}
+````
+
+### 21.5.7 update ###
+````
+@Override
+public int update(Statement statement) throws SQLException {
+    String sql = boundSql.getSql();
+    Object parameterObject = boundSql.getParameterObject();
+    KeyGenerator keyGenerator = mappedStatement.getKeyGenerator();
+    int rows;
+    // 如果是 Jdbc3KeyGenerator 类型
+    if (keyGenerator instanceof Jdbc3KeyGenerator) {
+        // <1.1> 执行写操作
+        statement.execute(sql, Statement.RETURN_GENERATED_KEYS);
+        // <2.2> 获得更新数量
+        rows = statement.getUpdateCount();
+        // <1.3> 执行 keyGenerator 的后置处理逻辑
+        keyGenerator.processAfter(executor, mappedStatement, statement, parameterObject);
+    // 如果是 SelectKeyGenerator 类型
+    } else if (keyGenerator instanceof SelectKeyGenerator) {
+        // <2.1> 执行写操作
+        statement.execute(sql);
+        // <2.2> 获得更新数量
+        rows = statement.getUpdateCount();
+        // <2.3> 执行 keyGenerator 的后置处理逻辑
+        keyGenerator.processAfter(executor, mappedStatement, statement, parameterObject);
+    } else {
+        // <3.1> 执行写操作
+        statement.execute(sql);
+        // <3.2> 获得更新数量
+        rows = statement.getUpdateCount();
+    }
+    return rows;
+}
+````
+
+## 21.6 PreparedStatementHandler ##
+org.apache.ibatis.executor.statement.PreparedStatementHandler ，继承 BaseStatementHandler 抽象类，java.sql.PreparedStatement 的 StatementHandler 实现类。
+
+### 21.6.1 构造方法 ###
+````
+public PreparedStatementHandler(Executor executor, MappedStatement mappedStatement, Object parameter, RowBounds rowBounds, ResultHandler resultHandler, BoundSql boundSql) {
+    super(executor, mappedStatement, parameter, rowBounds, resultHandler, boundSql);
+}
+````
+
+### 21.6.2 instantiateStatement ###
+instantiateStatement() 方法，创建 java.sql.Statement 对象。
+````
+@Override
+protected Statement instantiateStatement(Connection connection) throws SQLException {
+    String sql = boundSql.getSql();
+    // <1> 处理 Jdbc3KeyGenerator 的情况
+    if (mappedStatement.getKeyGenerator() instanceof Jdbc3KeyGenerator) {
+        String[] keyColumnNames = mappedStatement.getKeyColumns();
+        if (keyColumnNames == null) {
+            return connection.prepareStatement(sql, PreparedStatement.RETURN_GENERATED_KEYS);
+        } else {
+            return connection.prepareStatement(sql, keyColumnNames);
+        }
+    // <2>
+    } else if (mappedStatement.getResultSetType() == ResultSetType.DEFAULT) {
+        return connection.prepareStatement(sql);
+    // <3>
+    } else {
+        return connection.prepareStatement(sql, mappedStatement.getResultSetType().getValue(), ResultSet.CONCUR_READ_ONLY);
+    }
+}
+````
+
+### 21.6.3 parameterize ###
+调用 ParameterHandler#setParameters(PreparedStatement ps) 方法，设置 PreparedStatement 的占位符参数
+
+### 21.6.7 update ###
+````
+@Override
+public int update(Statement statement) throws SQLException {
+    PreparedStatement ps = (PreparedStatement) statement;
+    // 执行写操作
+    ps.execute();
+    int rows = ps.getUpdateCount();
+    // 获得更新数量
+    Object parameterObject = boundSql.getParameterObject();
+    // 执行 keyGenerator 的后置处理逻辑
+    KeyGenerator keyGenerator = mappedStatement.getKeyGenerator();
+    keyGenerator.processAfter(executor, mappedStatement, ps, parameterObject);
+    return rows;
+}
+````
+
+## 21.7 CallableStatementHandler ##
+
+org.apache.ibatis.executor.statement.CallableStatementHandler ，继承 BaseStatementHandler 抽象类，java.sql.CallableStatement 的 StatementHandler 实现类。
 
 
+存储过程相关
 
+
+## 21.8 创建 StatementHandler 对象 ##
+
+主要由Configuration类中的函数创建。
+````
+public StatementHandler newStatementHandler(Executor executor, MappedStatement mappedStatement, Object parameterObject, RowBounds rowBounds, ResultHandler resultHandler, BoundSql boundSql) {
+    // <1> 创建 RoutingStatementHandler 对象
+    StatementHandler statementHandler = new RoutingStatementHandler(executor, mappedStatement, parameterObject, rowBounds, resultHandler, boundSql);
+    // 应用插件
+    statementHandler = (StatementHandler) interceptorChain.pluginAll(statementHandler);
+    return statementHandler;
+}
+````
+
+----
+
+# 22 SQL 执行（三）之 KeyGenerator #
+
+整体是以 KeyGenerator 为核心。所以，本文主要会看到的就是 KeyGenerator 对自增主键的获取。
+
+## 22.1 KeyGenerator ##
+org.apache.ibatis.executor.keygen.KeyGenerator ，主键生成器接口。
+
+````
+public interface KeyGenerator {
+    // SQL 执行前
+    void processBefore(Executor executor, MappedStatement ms, Statement stmt, Object parameter);
+    // SQL 执行后
+    void processAfter(Executor executor, MappedStatement ms, Statement stmt, Object parameter);
+
+}
+````
+可在 SQL 执行之前或之后，进行处理主键的生成。
+实际上，KeyGenerator 类的命名虽然包含 Generator ，但是目前 MyBatis 默认的 KeyGenerator 实现类，都是基于数据库来实现主键自增的功能。
+
+## 22.2 Jdbc3KeyGenerator ##
+org.apache.ibatis.executor.keygen.Jdbc3KeyGenerator ，实现 KeyGenerator 接口，基于 Statement#getGeneratedKeys() 方法的 KeyGenerator 实现类，适用于 MySQL、H2 主键生成。
+
+### 22.2.1 构造方法 ###
+````
+/**
+ * A shared instance.
+ *
+ * 共享的单例
+ *
+ * @since 3.4.3
+ */
+public static final Jdbc3KeyGenerator INSTANCE = new Jdbc3KeyGenerator();
+````
+
+### 22.2.2 processBefore ###
+空实现。因为对于 Jdbc3KeyGenerator 类的主键，是在 SQL 执行后，才生成
+
+### 22.2.3 processAfter ###
+调用 #processBatch(Executor executor, MappedStatement ms, Statement stmt, Object parameter) 方法，处理返回的自增主键。单个 parameter 参数，可以认为是批量的一个特例。
+
+### 22.2.4 processBatch ###
+````
+public void processBatch(MappedStatement ms, Statement stmt, Object parameter) {
+    // <1> 获得主键属性的配置。如果为空，则直接返回，说明不需要主键
+    final String[] keyProperties = ms.getKeyProperties();
+    if (keyProperties == null || keyProperties.length == 0) {
+        return;
+    }
+    ResultSet rs = null;
+    try {
+        // <2> 获得返回的自增主键
+        rs = stmt.getGeneratedKeys();
+        final Configuration configuration = ms.getConfiguration();
+        if (rs.getMetaData().getColumnCount() >= keyProperties.length) {
+            // <3> 获得唯一的参数对象
+            Object soleParam = getSoleParameter(parameter);
+            if (soleParam != null) {
+                // <3.1> 设置主键们，到参数 soleParam 中
+                assignKeysToParam(configuration, rs, keyProperties, soleParam);
+            } else {
+                // <3.2> 设置主键们，到参数 parameter 中
+                assignKeysToOneOfParams(configuration, rs, keyProperties, (Map<?, ?>) parameter);
+            }
+        }
+    } catch (Exception e) {
+        throw new ExecutorException("Error getting generated key or setting result to parameter object. Cause: " + e, e);
+    } finally {
+        // <4> 关闭 ResultSet 对象
+        if (rs != null) {
+            try {
+                rs.close();
+            } catch (Exception e) {
+                // ignore
+            }
+        }
+    }
+}
+````
+
+#### 22.2.4.1 getSoleParameter ####
+
+````
+/**
+ * 获得唯一的参数对象
+ *
+ * 如果获得不到唯一的参数对象，则返回 null
+ *
+ * @param parameter 参数对象
+ * @return 唯一的参数对象
+ */
+private Object getSoleParameter(Object parameter) {
+    // <1> 如果非 Map 对象，则直接返回 parameter
+    if (!(parameter instanceof ParamMap || parameter instanceof StrictMap)) {
+        return parameter;
+    }
+    // <3> 如果是 Map 对象，则获取第一个元素的值
+    // <2> 如果有多个元素，则说明获取不到唯一的参数对象，则返回 null
+    Object soleParam = null;
+    for (Object paramValue : ((Map<?, ?>) parameter).values()) {
+        if (soleParam == null) {
+            soleParam = paramValue;
+        } else if (soleParam != paramValue) {
+            soleParam = null;
+            break;
+        }
+    }
+    return soleParam;
+}
+````
+
+#### 22.2.4.2 assignKeysToParam ####
+````
+private void assignKeysToParam(final Configuration configuration, ResultSet rs, final String[] keyProperties, Object param)
+        throws SQLException {
+    final TypeHandlerRegistry typeHandlerRegistry = configuration.getTypeHandlerRegistry();
+    final ResultSetMetaData rsmd = rs.getMetaData();
+    // Wrap the parameter in Collection to normalize the logic.
+    // <1> 包装成 Collection 对象
+    Collection<?> paramAsCollection;
+    if (param instanceof Object[]) {
+        paramAsCollection = Arrays.asList((Object[]) param);
+    } else if (!(param instanceof Collection)) {
+        paramAsCollection = Collections.singletonList(param);
+    } else {
+        paramAsCollection = (Collection<?>) param;
+    }
+    TypeHandler<?>[] typeHandlers = null;
+    // <2> 遍历 paramAsCollection 数组
+    for (Object obj : paramAsCollection) {
+        // <2.1> 顺序遍历 rs
+        if (!rs.next()) {
+            break;
+        }
+        // <2.2> 创建 MetaObject 对象
+        MetaObject metaParam = configuration.newMetaObject(obj);
+        // <2.3> 获得 TypeHandler 数组
+        if (typeHandlers == null) {
+            typeHandlers = getTypeHandlers(typeHandlerRegistry, metaParam, keyProperties, rsmd);
+        }
+        // <2.4> 填充主键们
+        populateKeys(rs, metaParam, keyProperties, typeHandlers);
+    }
+}
+````
+
+#### 22.2.4.3 assignKeysToOneOfParams ####
+````
+protected void assignKeysToOneOfParams(final Configuration configuration, ResultSet rs, final String[] keyProperties,
+                                       Map<?, ?> paramMap) throws SQLException {
+    // Assuming 'keyProperty' includes the parameter name. e.g. 'param.id'.
+    // <1> 需要有 `.` 。
+    int firstDot = keyProperties[0].indexOf('.');
+    if (firstDot == -1) {
+        throw new ExecutorException(
+                "Could not determine which parameter to assign generated keys to. "
+                        + "Note that when there are multiple parameters, 'keyProperty' must include the parameter name (e.g. 'param.id'). "
+                        + "Specified key properties are " + ArrayUtil.toString(keyProperties) + " and available parameters are "
+                        + paramMap.keySet());
+    }
+    // 获得真正的参数值
+    String paramName = keyProperties[0].substring(0, firstDot);
+    Object param;
+    if (paramMap.containsKey(paramName)) {
+        param = paramMap.get(paramName);
+    } else {
+        throw new ExecutorException("Could not find parameter '" + paramName + "'. "
+                + "Note that when there are multiple parameters, 'keyProperty' must include the parameter name (e.g. 'param.id'). "
+                + "Specified key properties are " + ArrayUtil.toString(keyProperties) + " and available parameters are "
+                + paramMap.keySet());
+    }
+    // Remove param name from 'keyProperty' string. e.g. 'param.id' -> 'id'
+    // 获得主键的属性的配置
+    String[] modifiedKeyProperties = new String[keyProperties.length];
+    for (int i = 0; i < keyProperties.length; i++) {
+        if (keyProperties[i].charAt(firstDot) == '.' && keyProperties[i].startsWith(paramName)) {
+            modifiedKeyProperties[i] = keyProperties[i].substring(firstDot + 1);
+        } else {
+            throw new ExecutorException("Assigning generated keys to multiple parameters is not supported. "
+                    + "Note that when there are multiple parameters, 'keyProperty' must include the parameter name (e.g. 'param.id'). "
+                    + "Specified key properties are " + ArrayUtil.toString(keyProperties) + " and available parameters are "
+                    + paramMap.keySet());
+        }
+    }
+    // 设置主键们，到参数 param 中
+    assignKeysToParam(configuration, rs, modifiedKeyProperties, param);
+}
+````
+
+### 22.2.5 populateKeys ###
+````
+private void populateKeys(ResultSet rs, MetaObject metaParam, String[] keyProperties, TypeHandler<?>[] typeHandlers) throws SQLException {
+    // 遍历 keyProperties
+    for (int i = 0; i < keyProperties.length; i++) {
+        // 获得属性名
+        String property = keyProperties[i];
+        // 获得 TypeHandler 对象
+        TypeHandler<?> th = typeHandlers[i];
+        if (th != null) {
+            // 从 rs 中，获得对应的 值
+            Object value = th.getResult(rs, i + 1);
+            // 设置到 metaParam 的对应 property 属性种
+            metaParam.setValue(property, value);
+        }
+    }
+}
+````
+
+## 22.3 SelectKeyGenerator ##
+org.apache.ibatis.executor.keygen.SelectKeyGenerator ，实现 KeyGenerator 接口，基于从数据库查询主键的 KeyGenerator 实现类，适用于 Oracle、PostgreSQL 。
+
+### 22.3.1 构造方法 ###
+````
+public static final String SELECT_KEY_SUFFIX = "!selectKey";
+
+/**
+ * 是否在 before 阶段执行
+ *
+ * true ：before
+ * after ：after
+ */
+private final boolean executeBefore;
+/**
+ * MappedStatement 对象
+ */
+private final MappedStatement keyStatement;
+
+public SelectKeyGenerator(MappedStatement keyStatement, boolean executeBefore) {
+    this.executeBefore = executeBefore;
+    this.keyStatement = keyStatement;
+}
+````
+
+### 22.3.2 processBefore ###
+
+
+### 22.3.4 processGeneratedKeys ###
+````
+private void processGeneratedKeys(Executor executor, MappedStatement ms, Object parameter) {
+    try {
+        // <1> 有查询主键的 SQL 语句，即 keyStatement 对象非空
+        if (parameter != null && keyStatement != null && keyStatement.getKeyProperties() != null) {
+            String[] keyProperties = keyStatement.getKeyProperties();
+            final Configuration configuration = ms.getConfiguration();
+            final MetaObject metaParam = configuration.newMetaObject(parameter);
+            // Do not close keyExecutor.
+            // The transaction will be closed by parent executor.
+            // <2> 创建执行器，类型为 SimpleExecutor
+            Executor keyExecutor = configuration.newExecutor(executor.getTransaction(), ExecutorType.SIMPLE);
+            // <3> 执行查询主键的操作
+            List<Object> values = keyExecutor.query(keyStatement, parameter, RowBounds.DEFAULT, Executor.NO_RESULT_HANDLER);
+            // <4.1> 查不到结果，抛出 ExecutorException 异常
+            if (values.size() == 0) {
+                throw new ExecutorException("SelectKey returned no data.");
+            // <4.2> 查询的结果过多，抛出 ExecutorException 异常
+            } else if (values.size() > 1) {
+                throw new ExecutorException("SelectKey returned more than one value.");
+            } else {
+                // <4.3> 创建 MetaObject 对象，访问查询主键的结果
+                MetaObject metaResult = configuration.newMetaObject(values.get(0));
+                // <4.3.1> 单个主键
+                if (keyProperties.length == 1) {
+                    // 设置属性到 metaParam 中，相当于设置到 parameter 中
+                    if (metaResult.hasGetter(keyProperties[0])) {
+                        setValue(metaParam, keyProperties[0], metaResult.getValue(keyProperties[0]));
+                    } else {
+                        // no getter for the property - maybe just a single value object
+                        // so try that
+                        setValue(metaParam, keyProperties[0], values.get(0));
+                    }
+                // <4.3.2> 多个主键
+                } else {
+                    // 遍历，进行赋值
+                    handleMultipleProperties(keyProperties, metaParam, metaResult);
+                }
+            }
+        }
+    } catch (ExecutorException e) {
+        throw e;
+    } catch (Exception e) {
+        throw new ExecutorException("Error selecting key or setting result to parameter object. Cause: " + e, e);
+    }
+}
+
+private void handleMultipleProperties(String[] keyProperties,
+                                      MetaObject metaParam, MetaObject metaResult) {
+    String[] keyColumns = keyStatement.getKeyColumns();
+    // 遍历，进行赋值
+    if (keyColumns == null || keyColumns.length == 0) {
+        // no key columns specified, just use the property names
+        for (String keyProperty : keyProperties) {
+            setValue(metaParam, keyProperty, metaResult.getValue(keyProperty));
+        }
+    } else {
+        if (keyColumns.length != keyProperties.length) {
+            throw new ExecutorException("If SelectKey has key columns, the number must match the number of key properties.");
+        }
+        for (int i = 0; i < keyProperties.length; i++) {
+            setValue(metaParam, keyProperties[i], metaResult.getValue(keyColumns[i]));
+        }
+    }
+}
+````
+
+## 22.4 NoKeyGenerator ##
+org.apache.ibatis.executor.keygen.NoKeyGenerator ，实现 KeyGenerator 接口，空的 KeyGenerator 实现类，即无需主键生成。
 
 
 
