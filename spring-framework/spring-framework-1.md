@@ -302,6 +302,117 @@ System.out.println("urlResource1 is urlResource:" + (urlResource2 instanceof  Ur
 ### 1.2.3 FileSystemResourceLoader ###
 从上面的示例，我们看到，其实 DefaultResourceLoader 对#getResourceByPath(String) 方法处理其实不是很恰当，这个时候我们可以使用 org.springframework.core.io.FileSystemResourceLoader 。它继承 DefaultResourceLoader ，且覆写了 #getResourceByPath(String) 方法，使之从文件系统加载资源并以 FileSystemResource 类型返回，这样我们就可以得到想要的资源类型。
 
+#### 1.2.3.1 FileSystemContextResource ####
+FileSystemContextResource ，为 FileSystemResourceLoader 的内部类，它继承 FileSystemResource 类，实现 ContextResource 接口。
+
+### 1.2.3 ClassRelativeResourceLoader ###
+
+org.springframework.core.io.ClassRelativeResourceLoader ，是 DefaultResourceLoader 的另一个子类的实现。和 FileSystemResourceLoader 类似，在实现代码的结构上类似，也是覆写 #getResourceByPath(String path) 方法，并返回其对应的 ClassRelativeContextResource 的资源类型。
+
+### 1.2.4 ResourcePatternResolver ###
+ResourceLoader 的 Resource getResource(String location) 方法，每次只能根据 location 返回一个 Resource 。当需要加载多个资源时，我们除了多次调用 #getResource(String location) 方法外，别无他法。org.springframework.core.io.support.ResourcePatternResolver 是 ResourceLoader 的扩展，它支持根据指定的资源路径匹配模式每次返回多个 Resource 实例
+````
+public interface ResourcePatternResolver extends ResourceLoader {
+	String CLASSPATH_ALL_URL_PREFIX = "classpath*:";
+	Resource[] getResources(String locationPattern) throws IOException;
+}
+````
+
+### 1.2.5 PathMatchingResourcePatternResolver ###
+org.springframework.core.io.support.PathMatchingResourcePatternResolver ，为 ResourcePatternResolver 最常用的子类，它除了支持 ResourceLoader 和 ResourcePatternResolver 新增的 "classpath*:" 前缀外，还支持 Ant 风格的路径匹配模式（类似于 "**/*.xml"）。
+
+#### 1.2.5.1 构造函数 ####
+PathMatchingResourcePatternResolver 提供了三个构造函数
+
+````
+/** 内置的 ResourceLoader 资源定位器 */
+private final ResourceLoader resourceLoader;
+/** Ant 路径匹配器 */
+private PathMatcher pathMatcher = new AntPathMatcher();
+
+public PathMatchingResourcePatternResolver() {
+	this.resourceLoader = new DefaultResourceLoader();
+}
+
+public PathMatchingResourcePatternResolver(ResourceLoader resourceLoader) {
+	Assert.notNull(resourceLoader, "ResourceLoader must not be null");
+	this.resourceLoader = resourceLoader;
+}
+
+public PathMatchingResourcePatternResolver(@Nullable ClassLoader classLoader) {
+	this.resourceLoader = new DefaultResourceLoader(classLoader);
+}
+````
+- PathMatchingResourcePatternResolver 在实例化的时候，可以指定一个 ResourceLoader，如果不指定的话，它会在内部构造一个 DefaultResourceLoader 。
+- pathMatcher 属性，默认为 AntPathMatcher 对象，用于支持 Ant 类型的路径匹配。
+
+#### 1.2.5.2 getResource ####
+````
+@Override
+public Resource getResource(String location) {
+	return getResourceLoader().getResource(location);
+}
+
+public ResourceLoader getResourceLoader() {
+	return this.resourceLoader;
+}
+````
+该方法，直接委托给相应的 ResourceLoader 来实现。所以，如果我们在实例化的 PathMatchingResourcePatternResolver 的时候，如果未指定 ResourceLoader 参数的情况下，那么在加载资源时，其实就是 DefaultResourceLoader 的过程。
+
+其实在下面介绍的 Resource[] getResources(String locationPattern) 方法也相同，只不过返回的资源是多个而已。
+
+#### 1.2.5.3 getResources ####
+````
+@Override
+public Resource[] getResources(String locationPattern) throws IOException {
+    Assert.notNull(locationPattern, "Location pattern must not be null");
+    // 以 "classpath*:" 开头
+    if (locationPattern.startsWith(CLASSPATH_ALL_URL_PREFIX)) {
+        // 路径包含通配符
+        // a class path resource (multiple resources for same name possible)
+        if (getPathMatcher().isPattern(locationPattern.substring(CLASSPATH_ALL_URL_PREFIX.length()))) {
+            // a class path resource pattern
+            return findPathMatchingResources(locationPattern);
+        // 路径不包含通配符
+        } else {
+            // all class path resources with the given name
+            return findAllClassPathResources(locationPattern.substring(CLASSPATH_ALL_URL_PREFIX.length()));
+        }
+    // 不以 "classpath*:" 开头
+    } else {
+        // Generally only look for a pattern after a prefix here, // 通常只在这里的前缀后面查找模式
+        // and on Tomcat only after the "*/" separator for its "war:" protocol. 而在 Tomcat 上只有在 “*/ ”分隔符之后才为其 “war:” 协议
+        int prefixEnd = (locationPattern.startsWith("war:") ? locationPattern.indexOf("*/") + 1 :
+                locationPattern.indexOf(':') + 1);
+        // 路径包含通配符
+        if (getPathMatcher().isPattern(locationPattern.substring(prefixEnd))) {
+            // a file pattern
+            return findPathMatchingResources(locationPattern);
+        // 路径不包含通配符
+        } else {
+            // a single resource with the given name
+            return new Resource[] {getResourceLoader().getResource(locationPattern)};
+        }
+    }
+}
+````
+处理逻辑：
+
+![](/picture/spring-resources.jpg)
+
+#### 1.2.5.4 findAllClassPathResources ####
+当 locationPattern 以 "classpath*:" 开头但是不包含通配符，则调用 #findAllClassPathResources(...) 方法加载资源。该方法返回 classes 路径下和所有 jar 包中的所有相匹配的资源。
+
+
+
+
+
+
+
+
+
+
+
 
 
 ----
