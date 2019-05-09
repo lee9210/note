@@ -1,0 +1,27 @@
+启动命令：nohup bin/kafka-server-start.sh config/server.properties >> /dev/null 2>&1
+
+
+启动zookeeper：./bin/zookeeper-server-start.sh ./config/zookeeper.properties
+启动kafka：./bin/kafka-server-start.sh ./config/server.properties >> /dev/null 2>&1
+创建consumer：bin/kafka-console-consumer.sh --zookeeper localhost:2181 --topic test --from-beginning
+创建provider：bin/kafka-console-producer.sh --broker-list 192.168.8.133:9092 --topic test
+
+
+kafka-console-consumer.bat --bootstrap-server 192.168.29.166:9092 --topic testDemo
+
+bin/kafka-console-consumer.sh --bootstrap-server 192.168.8.133:9092 --topic test --from-beginning
+/tmp/kafka-logs
+
+
+windows
+D:\develop_soft\kafka_2.11-2.0.0>.\bin\windows\kafka-server-start.bat .\config\server.properties
+
+
+.\bin\windows\kafka-topics.bat --zookeeper 192.168.29.132:2181 --create --topic notify-topic  --partitions 16  --replication-factor 1
+.\bin\windows\kafka-topics.bat --zookeeper 192.168.29.132:2181 --create --topic callback-merchant-topic  --partitions 16  --replication-factor 1
+
+kafka-topics.bat --zookeeper 103.94.76.3:2181 --create --topic merchant-balance-update  --partitions 16  --replication-factor 1
+
+
+sh ./zkServer.sh start
+nohup bin/kafka-server-start.sh config/server.properties >> /dev/null 2>&1 &
