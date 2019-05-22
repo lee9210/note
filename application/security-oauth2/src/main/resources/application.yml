@@ -1,0 +1,28 @@
+security:
+  oauth2:
+    client:
+      client-id: merryyou
+      client-secret: merryyou
+server:
+  session:
+    timeout: 60
+  port: 9090
+spring:
+  session:
+    store-type: redis
+  redis:
+    host: localhost
+    port: 6380
+logging:
+  level: debug
+merryyou:
+  security:
+    oauth2:
+      storeType: jwt
+      jwtSigningKey: merryyou
+      clients[0]:
+        clientId: merryyou
+        clientSecret: merryyou
+      clients[1]:
+              clientId: merryyou1
+              clientSecret: merryyou1
