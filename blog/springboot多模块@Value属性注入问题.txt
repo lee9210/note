@@ -1,0 +1,15 @@
+项目结构
+project
+	--module1
+		--main
+		--resources/application.properties
+	--module2
+		--main
+		--resources/application.properties
+main函数在module1模块中的时候，module2中可以使用module1/resources/application.properties内的属性
+但是不能使用module2/resources/application.properties内的属性
+当要使用module2/resources/application.properties内的属性的时候可以这样做
+1、修改module2/resources/application.properties文件为module2.properties
+2、在需要注入的类上面写上如下注释
+@PropertySource(ignoreResourceNotFound=true,value="classpath:module2.properties")
+然后就可以在类中使用@Value注解使用了
