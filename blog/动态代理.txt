@@ -1,1 +1,3 @@
 https://javatar.iteye.com/blog/814426	动态代理方案性能对比
+cglib:https://www.cnblogs.com/hetutu-5238/p/11996529.html
+jdk:https://www.cnblogs.com/hetutu-5238/p/11988946.html
