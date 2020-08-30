@@ -1,0 +1,30 @@
+kafka 源码搭建过程中遇到的问题
+
+1. Cannot set the value of read-only property 'additionalSourceDirs' for task ':jacocoRootReport' of type org.gradle.testing.jacoco.tasks.JacocoReport.
+
+gradle版本问题，使用的是6.1，改成3.1
+问题解决
+
+2.  Failed to apply plugin [class 'org.gradle.api.plugins.scala.ScalaBasePlugin'] No such property: useAnt for class: org.gradle.api.tasks.scala.ScalaCompileOptions
+
+在build.gradle文件
+import org.ajoberstar.grgit.Grgit后面加上
+
+ScalaCompileOptions.metaClass.daemonServer = true
+ScalaCompileOptions.metaClass.fork = true
+ScalaCompileOptions.metaClass.useAnt = false
+ScalaCompileOptions.metaClass.useCompileDaemon = false
+
+tips：
+需要安装scala和gradle环境
+scala版本和gradle.properties文件中scalaVersion属性需要保持一致
+
+
+3. 启动报错noconfig 
+
+把log4j.properties文件复制进入~\core\src\main\resources目录中
+
+
+
+
+
