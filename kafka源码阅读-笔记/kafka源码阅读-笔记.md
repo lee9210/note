@@ -16,7 +16,7 @@ producer流程图：
 1. ProducerInterceptors对消息进行拦截
 2. Serializer对消息的key和value进行序列化
 3. Partitioner为消息选择合适的Partition
-4. RecordAccumulator手机消息，实现批量发送
+4. RecordAccumulator收集消息，实现批量发送
 5. Sender从RecordAccumulator获取消息
 6. 构造ClientRequest
 7. 将ClientRequest交给NetworkClient，准备发送
@@ -411,7 +411,7 @@ GroupCoordinator是kafkaServer中用于管理consumer group的组件，。消费
 	收到请求的broker会返回ConsumerMetadataResponse作为响应，其中包含了管理此Consumer group的GroupCoordinator的相关信息
 2. 消费者根据ConsumerMetadataResponse中的GroupCoordinator信息，连接到GroupCoordinator并周期性的发送HeadbeatReqeust.发送HeadbeatReqeust主要作用是为了告诉GroupCoordinator此消费者正常在线，
     GroupCoordinator会认为长时间未发送HeadbeatReqeust的消费者已经下线，触发新一轮的rebalance操作
-3. 如果HeadbeatResponse中带有IllegalGeneration异常，说明GroupCoordinator发起了rebalance操作，此时消费者发送JoinGroupRequest给GroupCoordinator.JoinGroupRequest的主要目的是为了统治GroupCoordinator，当前消费者要加入指定的consumer group。
+3. 如果HeadbeatResponse中带有IllegalGeneration异常，说明GroupCoordinator发起了rebalance操作，此时消费者发送JoinGroupRequest给GroupCoordinator.JoinGroupRequest的主要目的是为了通知GroupCoordinator，当前消费者要加入指定的consumer group。
     之后，GroupCoordinator会根据收到的JoinGroupRequest和zookeeper中的元数据完成对此consumer group的分区分配
 4. GroupCoordinator会在分配完成后，将分配结果写入zookeeper保存，并通过JoinGroupResponse返回给消费者。消费者就可以根据JoinGroupResponse中分配的分区开始消费数据
 5. 消费者成功称为consumer group的成员后，会周期性的发送HeadbeatReqeust。如果HeadbeatResponse包含IllegalGeneration异常，则执行步骤3。
@@ -713,6 +713,1045 @@ onJoinComplete()流程图如下：
 7. 重启HeartbeatTask定时任务，定时发送心跳
 
 ####offset操作####
+
+- 提交offset
+
+
+在消费者正常消费过程中以及在rebalance操作开始之前，都会提交一次offset记录consumer当前的消费位置。提交offset的功能由ConsumerCoordinator实现
+在SubscriptionState.position字段记录了消费者下次要从服务端获取的消息的offset。当没有明确指定待提交的offset值时，则将TopicPartitionState.position作为待提交offset，组织成集合，
+形成ConsumerCoordinator.commitOffset*()函数的第一个参数。
+
+AutoCommitTask是一个定时任务，它周期性地调用commitOffsetsAsync()犯法，实现了自动提交offset的功能。
+开启自动提交offset功能后，业务逻辑中就可以不用手动调用commitOffsets*()方法提交offset了。
+
+OffsetCommitResponseHandler.handle()方法是处理OffsetCommitResponse的入口
+
+- fetch offset
+在rebalance操作结束之后，每个消费者都确定其需要消费的分区。在开始消费之前，消费者需要确定拉取消息的起始位置。
+假设之前已经将最后的消费位置提交到了GroupCoordinator，GroupCoordinator将其保存到了kafka内部的Offset Topic中，此时消费者可以通过OffsetFetchRequest请求获取上次提交offset并从此处继续消费。
+
+refreshCommittedOffsetsIfNeeded()函数的主要功能是发送OffsetFetchRequest请求，从服务端拉取最近提交的offset集合，并更新到Subscription集合中
+
+
+####Fetcher####
+KafkaConsumer依赖Fetcher从服务端获取消息，Fetcher类的主要功能是发送FetcherRequest请求，获取指定的消息集合，处理FetcherResponse，更新消费位置。
+
+部分字段：
+````
+    /** ConsumerNetworkClient,负责网络通信 */
+    private final ConsumerNetworkClient client;
+    /** 在服务端收到FetchRequest之后并不是立即响应，而是当可返回的消息积累到至少minBytes个字节时，才进行响应。这样每个FetchResponse中就包含多条消息，提高网络的有效负载 */
+    private final int minBytes;
+    /** 等待FetchResponse的最长时间，服务端根据此事件决定何时进行响应 */
+    private final int maxWaitMs;
+    /** 每次fetch操作的最大字节数 */
+    private final int fetchSize;
+    /** 每次获取Record的最大数量 */
+    private final int maxPollRecords;
+    /** 记录了Kafka集群的元数据 */
+    private final Metadata metadata;
+    /** 记录每个TopicPartition的消费情况 */
+    private final SubscriptionState subscriptions;
+    /** 每个FetchResponse首先会转换成CompletedFetch对象进入此队列缓存，此时并未解析消息 */
+    private final List<CompletedFetch> completedFetches;
+    /** key的反序列化器 */
+    private final Deserializer<K> keyDeserializer;
+    /** value的反序列化器 */
+    private final Deserializer<V> valueDeserializer;
+    /** PartitionRecords保存了CompletedFetch解析后的结果集合 */
+    private PartitionRecords<K, V> nextInLineRecords = null;
+````
+
+- Fetch消息
+createFetchRequest()函数负责创建FetchRequest请求，
+sendFetches()函数负责将FetchRequest添加到unsent集合中等待发送，并注册FetchResponse处理函数，
+fetchedRecords()函数中会将CompletedFetch中的消息进行解析，得到Record集合并返回，同时还会修改对应TopicPartitionState的position，为下次fetch操作做好准备
+
+- 更新position
+在有些场景下，例如第一次消费某个topic的分区，服务端的内部Offset Topic中并没有记录当前消费者在此分区上的消费位置，所以消费者无法从服务端获取最近提交的offset.此时如果用户手动指定消费的起始offset，则可以从指定offset开始消费，否则就需要重置TopicPartitionState.position字段。
+重置TopicPartitionState.position字段的过程中设计OffsetRequest和OffsetResponse
+
+Fetcher.updateFetchPositions()函数实现了重置TopicPartitionState.position字段的功能，
+
+- 获取集群元数据
+发送MetatdataRequest请求到负载最小的node节点，并阻塞等待MetadataResponse，正常收到响应后对其解析，得到需要的集群元数据。
+
+更新Metadata使用的是NetworkClient.DefaultMetadataUpdater
+
+####总结####
+KafkaConsumer依赖SubscriptionState管理订阅的topic集合和partition的消费状态，通过ConsumerCoordinator与服务端的GroupCoordinator交互，完成rebalance操作并请求最近提交的offset。Fetch负责从kafka中拉取消息并进行解析，同时从桉树position的重置操作，提供获取指定topic的集群元数据的操作。
+上述操作的所有请求都是通过ConsumerNetworkClient缓存并发送的，在ConsumerNetworkClient中还维护了定时任务对垒，用来完成HeartbeatTask任务和AutoCommitTask任务。NetworkClient在接收到上述请求的响应时会调用相应回调，最终交给其对应的*Handler以及ReqeustFuture的监听器进行处理
+
+consumer框架图
+![](./picture/kafka-consumer-frame.png)
+
+KafkaConsumer不是一个线程安全的类，为了 防止多线程并发操作，KafkaConsumer提供了多线程并发的检测机制，涉及的方法是acquire()和release()
+
+KafkaConsumer.poll()函数是实际消费消息的函数，在此函数中会发送一次FetchRequest请求，和其他线程上的请求是并行的，不相互影响
+图示：
+![](./picture/consumer-poll-request.png)
+
+
+#Kafka服务端#
+
+整个服务端架构图：
+![](./picture/kafka-server-frame.png)
+
+
+##网络层##
+kafka的客户端会与服务端的多个broker创建网络连接，在这些网络连接上流传着各种请求及其相应，从而实现客户端与服务端之间的交互。
+客户端一般情况下不会碰到大量数据访问、高并发的场景，所以客户端使用NetworkClient组件管理。Kafka服务端面对高并发、低延迟的请求，使用Reactor模式实现其网络层。
+kafka的网络层管理的网络连接中不经有来自客户端的，还会有来自其他broker的网络连接。
+
+####reactor模式####
+模型：
+![](./picture/server-model.png)
+
+工作原理：
+1. 首先创建ServerSocketChannel对象，并在Selector上注册OP_ACCEPT事件，ServerSocketChannel负责监听指定端口上的连接请求。
+2. 当客户端发起到服务端的网络连接时，服务端的Selector监听到此OP_ACCEPT事件，会触发Acceptor来处理OP_ACCEPT
+3. 当Acceptor接收到来自客户端的socket连接请求时，会为这个连接创建相应的SocketChannel，将SocketChannel设置为非阻塞模式，并在Selector上注册其关注的I/O事件，
+例如OP_READ、OP_WRITE。此时，客户端与服务端之间的socket连接正式建立完成。
+4. 当客户端通过上面建立的socket连接向服务端发送请求时，服务端的Selector会监听到OP_READ事件，并触发相应的处理逻辑(Reader Handler)。
+当服务端可以向客户端写数据时，服务端的selector会监听到OP_WRITE事件，并触发执行相应的处理逻辑(Writer Handler)
+
+**这些事件处理逻辑都是在同一线程中完成的。**
+
+因此服务端对上述架构做了调整，将网络读写的逻辑与业务处理的逻辑进行拆分，让其由不同的线程池来处理，从而实现多线程处理
+架构图：
+![](./picture/kafka-reactor-model.png)
+
+acceptro单独运行在一个线程中
+Reader ThreadPool线程池中的所有线程都会在selector上注册OP_READ事件，负责服务端读取请求的逻辑，也是一个线程对应处理多个socket连接
+Reader ThreadPool中的线程成功读取请求后，将请求放入MessageQueue这个共享队列中，
+Handler ThreadPool线程池中的线程会从MessageQueue中取出请求，然后执行业务逻辑对请求进行处理。
+当请求处理完成后，handler线程还负责产生响应并发送给客户端，这就要求Handler ThreadPool中的线程在selector中注册OP_WRITE事件，实现发送响应的功能。
+
+多个selector的架构模型：
+![](./picture/kafka-reactor-selecors-model.png)
+
+####SocketServer####
+kafka的网络层是采用多线程、多个selector的设计实现的。核心类是SocketServer,其中一包含一个Acceptor用于接收并处理所有的新连接，每个Acceptor对应多个Processor线程，每个Processor线程拥有自己的selecotr，主要用于从连接中读取请求和写回响应。
+每个acceptor对应多个Handler线程，主要用于处理请求，并将产生响应返回给Processor线程，Processor线程与Handler线程之间通过RequestChannel进行通信。
+架构图：
+![](./picture/kafka-server-SocketServer-model.png)
+
+部分字段：
+````
+  /** Endpoint集合。一般的服务器有多快网卡，可以配置多个ip，kafka可以同时监听多个端口。Endpoint类中封装了需要监听的host、port及使用的网络协议，每个Endpoint都会创建一个对应的Acceptor对象 */
+  private val endpoints = config.listeners
+  /** Processor线程的个数 */
+  private val numProcessorThreads = config.numNetworkThreads
+  /** 在RequestChannel的requestQueue中缓存的最大请求个数 */
+  private val maxQueuedRequests = config.queuedMaxRequests
+  /** Processor线程的总个数 */
+  private val totalProcessorThreads = numProcessorThreads * endpoints.size
+  /** 每个IP上能创建的最大连接数 */
+  private val maxConnectionsPerIp = config.maxConnectionsPerIp
+  /** 具体制定某IP上最大的连接数 */
+  private val maxConnectionsPerIpOverrides = config.maxConnectionsPerIpOverrides
+  /** Processor线程与Handler线程之间交换数据的队列 */
+  val requestChannel = new RequestChannel(totalProcessorThreads, maxQueuedRequests)
+  /** Processor线程集合。此集合包含所有Endpoint对应的Processors线程 */
+  private val processors = new Array[Processor](totalProcessorThreads)
+  /** Acceptor对象集合，每个Endpoint对应一个Acceptor对象 */
+  private[network] val acceptors = mutable.Map[EndPoint, Acceptor]()
+  /** ConnectionQuotas类型对象。在ConnectionQuotas中，提供了控制每个IP上的最大连接数的功能 */
+  private var connectionQuotas: ConnectionQuotas = _
+````
+
+processor线程集合
+![](./picture/kafka-processor.png)
+
+####AbstractServerThread####
+关键字段：
+````
+  /** 标识当前线程的startup是否完成 */
+  private val startupLatch = new CountDownLatch(1)
+  /** 标识当前线程的shutdown操作是否完成 */
+  private val shutdownLatch = new CountDownLatch(1)
+  /** 标识当前线程是否存活，在shutdown()函数中会将alive设置为false */
+  private val alive = new AtomicBoolean(true)
+````
+
+####Acceptor####
+主要功能是接受客户端建立连接的请求，创建socket连接并分配给Processor处理
+
+
+####Processor####
+主要用于完成读取请求和写回响应的操作，Processor不参与具体业务逻辑的处理
+
+在Acceptor.accept()函数中创建的SocketChannel会通过Processor.accept()函数交给Processor进行处理。
+Processor.accept()函数接受到一个新的SocketChannel时会先将其放入newConnections队列中,然后会唤醒Processor线程来处理newConnections队列。
+
+
+run()函数实现从网络连接上读取数据的功能
+
+1. 首先调用startupComplete()函数，标识Processor的初始化流程已经结束，唤醒阻塞等待此Processor初始化完成的线程
+2. 处理newConnections队列中的新建SocketChannel。队列中的每个SocketChannel都要在nioSelector上注册OP_READ事件。
+	这里有个细节，SocketChannel会被封装成KafkaChannel，并附加(attach)到SelectionKey上，所有后面触发OP_READ事件时，
+	从SelectionKey上获取的是KafkaChannel类型的对象。
+3. 获取RequestChannel中对应的responseQueue队列，并处理其中的缓存的Response
+	如果Response是SendAction类型，表示该Response需要发送给客户端，则查找对应的KafkaChannel，为其注册OP_WRITE事件，并将KafkaChannel.send字段指向待发送的Response对象。时还会将Response从responseQueue队列中移出，放入inflightResponses中。
+	如果Response是NoOpAction类型，表示此连接暂无响应需要发送，则为KafkaChannel注册OP_READ，允许其继续读取请求
+	如果Response是CloseConnectionAction类型，则关闭对应的连接
+4. 调用SocketServer.poll()函数读取请求，发送响应。poll()底层调用的是KSelector.poll()函数。SocketServer.poll()函数每次调用都会将读取的请求、发送成功的请求以及断开的连接放入其completedReceives、completedSends、disconnected队列中等待处理。下面的步骤就是处理这些队列
+5. 调用processCompletedReceives()函数处理KSelector.completedReceives队列。
+	首先，遍历completedReceives，将NetworkReceive、ProcessorId、身份认证信息一起封装成RequestChannel.Reqeust对象并放入RequestChannel.requestQueue队列中，等待Handler线程的后续处理
+	然后，取消对应KafkaChannel注册的OP_READ时间，表示在发送响应之前，此连接不能在读取任何请求
+6. 调用processorCompletedSends()函数处理KSelector.completedSends队列。
+	首先，将inflightResponses中保存的对应Response删除。
+	然后，为对应连接重新注册OP_READ时间，允许从该连接读取数据。、
+7. 调用processDisconnected()函数处理KSelector.disconnected队列。
+	先从inflightResponses中删除该连接对应的所有Response。然后，减少ConnectionQuotas中记录的连接数，为后续的新建连接做准备
+8. 当SocketServer.shutdown()关闭整个SocketServer时，将alive字段设置为false，循环结束。然后调用shutdownComplete()函数执行一系列关闭操作：
+	关闭Processor管理的全部连接，减少ConnectionQuotas中记录的连接数,标识自身的关闭流程已经结束，唤醒等待该Processor结束的线程。
+	
+流程图如下：
+![](./picture/Processor-run-flow.png)
+
+####RequestChannel####
+Processor线程与Handler线程之间传递数据是通过ReqeustChannel完成的。在ReqeustChannel中包含了一个requestQueue队列和多个responseQueue队列，
+每个Processor线程对应一个responseQueue。Processor线程将读取到的请求存入requestQueue中，Handler线程从requestQueue队列中取出请求进行处理；
+Handler线程处理请求产生的响应会存放到Processor对应的responseQueue中，Processor线程从其对应的responseQueue中取出响应并发送给客户端。
+
+结构图：
+![](./picture/RequestChannel-model.png)
+
+在RequestChannel中保存的是RequestChannel.Request和RequestChannel.Response两个类的对象。RequestChannel.Request会对请求进行解析，形成requestId(请求类型ID)、header(请求头)、body(请求体)等字段，供Handler线程使用，并提供了一些记录操作时间的字段供监控程序使用
+
+一个请求从生产者到服务端的过程：
+![](./picture/a-request-from-producer-flow.png)
+
+KafkaProducer线程创建ProducerRecord后，会将其缓存进RecordAccumulator。sender线程从RecordAccumulator中获取缓存的消息，放入KafkaChannel.send字段中等待发送，同时放入InFlightRequests队列中等待响应。之后客户端会通过KSelector将请求发送出去。
+在服务端Processor线程使用KSelector读取请求，并暂存到stageReceives队列中，KSelector.poll()函数结束后，请求被转移到completeReceives队列中。
+之后，Processor将请求进行一些解析操作后，放入RequestChannel.requestQueue队列。Handler线程会从RequestChannel.requestQueue队列中取出请求进行处理，将处理之后生成的响应放入RequestChannel.requestQueue队列。
+Processor线程从其对应的RequestChannel.responseQueue队列中取出响应并放入inflightResponses队列中缓存，当响应发送出去之后会将其从inflightResponses中删除。
+生产者读取响应的过程与服务端读取请求的过程类似，主要的区别是生产者需要对InFlightRequest中的请求进行确认。消费者与服务端之间的请求和响应的流转过程与上述过程类似。
+
+##API层##
+Handler线程会取出Processor线程，放入RequestChannel的请求进行处理，并将产生的响应通过RequestChannel传递给Processor线程。
+Handler线程属于Kafka的API层，Handler线程对请求的处理通过调用KafkaApis中的方法实现。
+
+####KafkaRequestHandler####
+主要职责是从RequestChannel获取请求并调用KafkaApis.handle()函数处理请求。
+
+API层使用KafkaRequestHandlerPool来管理所有的KafkaRequestHandler线程，KafkaRequestHandlerPool是一个简易版的线程池
+
+####KafkaApis####
+KafkaApis是kafka服务器处理请求的入口类。他负责将KafkaRequestHandler传递过来的请求分发到不同的handl* ()处理函数中，分发的依据是RequestChannel.Request中的requestId,此字段保存了请求的ApiKeys的值，不同的piKeys值表示不同请求的类型。
+
+##日志存储##
+
+kafka使用日志文件的方式保存生产者发送的消息。每条消息都有一个offset值来表示它在分区中的偏移量，这个offset值是逻辑值，并不是消息实际存放的物理地址。
+offset值类似于数据库表中的主键，主键唯一确定了数据库表中的一条记录，offset唯一确定了分区中的一条消息
+
+log结构图:
+![](./picture/kafka-log-frame.png)
+
+日志索引和文件对照图：
+![](./picture/kafka-log-index-file.png)
+
+####FileMessageSet####
+kafka使用FileMessageSet管理日志文件。它对应磁盘上的一个真正的日志文件。
+
+继承自MessageSet。MessageSet中保存的数据格式分为三部分，8字节的offset值，4字节的size则表示message data大小，这两部分组成LogOverhead,message data部分保存了消息的数据，逻辑上对应一个message对象。
+![](./picture/MessageSet-frame.png)
+
+kafka使用Message类表示消息，Message使用ByteBuffer保存数据。
+![](./picture/Message-frame.png)
+
+- CRC32:4个字节，消息的校验码
+- magic:1字节，魔数标识，与消息格式有关，取值为0或1。当magic为0时，消息的offset使用绝对offset且消息格式中没有timestamp部分；
+	当magic为1时，消息的offset使用相对offset且消息格式中存在timestamp部分。所以magic不同，消息的长度不同
+- attributes:1字节，消息的属性。其中0表示无压缩，1标识gzip压缩，2标识snappy压缩，3表示lz4压缩。第3位标识时间戳类型，0表示创建时间，1表示追加时间
+- timestamp:时间戳，其含义由attribute的第3位确定
+- key length:消息key的长度。
+- key：消息的key
+- value length:消息value长度
+- value:消息的value
+
+部分字段：
+````
+file:java.io.File类型，指向磁盘上对应的日志文件
+channel:FileChannel类型，用于读写对应的日志文件
+start和end:FileMessageSet对象除了表示一个完整的日志文件，还可以表示日志文件分片(slice),start和end表示分片的起始位置。
+isSlice:Boolean类型，表示当前FileMessageSet是否为日志文件的分片
+_size:FileMessageSet大小，单位是字节
+````
+
+####ByteBufferMessageSet####
+压缩消息日志文件，对应着客户端的批量消息压缩
+
+**创建压缩消息**
+服务端存储原理
+1. 当生产产生创建压缩消息的时候，对压缩消息设置的offset是内部offset，即分配给每个消息的offset分别是0，1，2
+2. 在kafka服务端为消息分配offset时，会根据外层消息中记录的内层压缩消息的个数为外层消息分配offset，为外层消息分配的offset是内存压缩消息中最后一个消息的offset值
+3. 当消费者获取压缩消息后进行解压缩，就可以根据内部消息的、相对的offset和外层消息的offset计算出每个消息的offset值了
+
+**迭代压缩消息**
+MemoryRecords.RecordsIterator#next()函数
+![](./picture/MemoryRecords.RecordsIterator-next.png)
+首先通过构造函数创建MemoryRecords.RecordsIterator对象，作为千层迭代器并调用next()函数，此时state字段为NOT_READY,调用makeNext()函数准备迭代项。
+在makeNext()函数中会判断深层迭代是否完成(即innerDone()函数)，当前未开始深层迭代则调用getNextEntryFromStream()函数获取offset为3031的消息，如图中的步骤1
+之后检测3031消息的压缩格式，假设采用GZIP的压缩格式，则通过private构造函数创建MemoryRecords.RecordsIterator对象作为深层迭代器，在构造过程中会创建对应的解压输入流。
+然后调用getNextEntryFromStream()函数解压offset为3031的外层消息，其中嵌套的压缩消息形成logEntries队列。然后调用深层迭代器的next()函数，因为不存在第三层迭代，且logEntries不为空，
+则从logEntries集合中获取消息并返回，此过程对应图中2.后续迭代中深层迭代未完成，则直接从logEntries集合中返回消息，图中3~7都会重复此过程。
+当深层迭代完成后，调用getEntriyFromStream()函数获取offset为3032的消息，如图中步骤8。后续迭代过程与上述过程重复。
+
+**ByteBufferMessageSet分析**
+此为服务端解消息处理过程。
+
+底层使用ByteBuffer保存消息数据ByteBufferMessageSet的角色和功能与MemoryRecords类似。主要提供了三个方面的功能：
+1. 将Message集合按照制定的压缩类型进行压缩，此功能主要用于构建ByteBufferMessageSet对象，通过ByteBufferMessageSet.create()函数完成
+
+2. 提供迭代器，实现深层迭代和浅层迭代两种迭代方式
+3.提供了消息验证和offset分配的功能。
+
+在ByteBufferMessageSet.create()方法中实现了消息的压缩以及offset分配，步骤：
+1. 如果传入Message集合为空，则返回空ByteBuffer
+2. 如果要求不对消息进行压缩，则通过OffsetAssigner分配每个消息的offset，在将消息写入到ByteBuffer之后，返回ByteBuffer.OffsetAssigner的功能是存储一串offset值，并像迭代器那样逐个返回
+3. 如果要求对消息进行压缩，则先将Message集合按照指定的压缩方式进行压缩并保存到缓冲区，同时也会完成offset的分配，然后按照压缩消息的格式写入外层消息，最后将整个外层消息所在的ByteBuffer返回。
+
+
+FileMessageSet.append()函数会将ByteBufferMessageSet中的全部数据追加到日志文件中，对于压缩消息来书，多条压缩消息就以一个外层消息的状态存在于分区日志文件中了。
+当消费者获取消息时也会得到压缩的消息，从而实现“端到端压缩”
+
+####OffsetIndex####
+为了提高查找消息的性能，kafka为每个日志文件添加了对应的索引文件。OffsetIndex对象对应管理磁盘上的一个索引文件。与FileMessageSet共同构成一个LogSegment对象。
+
+Kafka使用系数索引的方式构造消息的索引，它不保证每个消息在索引文件中都有对应的索引项目，这算是磁盘空间、内存空间、查找时间等多方面的这种。
+
+OffsetIndex提供了向索引文件中添加索引项的append()函数，将索引文件截断到某个位置的truncateTo()函数和truncateToEntries()函数，进行文件扩容的resize()函数。
+
+OffsetIndex中常用的查找相关的方法是二分查找，设计的方法是indexSlotFor()和lookup()。查找的目标是小于targetOffset的最大offset对应的物理地址(position)
+
+####LogSegment####
+为了防止Log文件过大，将Log切分成多个日志文件，每个日志文件对应一个LogSegment。在LogSegment中封装了一个FileMessageSet和一个OffsetIndex对象，提供日志文件和索引文件的读写功能以及其他辅助功能。
+
+**append()**
+追加消息功能:append()函数
+![](./picture/LogSegment-append-model.png)
+
+可能有多个handler线程并发写入同一个LogSegment,所以调用此方法必须保证线程安全。
+
+**read()**
+读取消息功能:read()函数
+实现逻辑是：通过读取segments跳表，快速定位到读取的其实LogSegment并从中读取消息
+![](./picture/LogSegment-read-model.png)
+1. 将absoluteOffset转换成Index File中使用的相对offset，得到17。通过OffsetIndex.lookup()函数查找Index File,得到(7,700)这个索引项，步骤1
+2. 根据(7,700)索引项，从MessageSet File中position=700处开始查找absoluteOffset为1017的消息，步骤2
+3. 通过FileMessageSet.searchFor()函数遍历查找FileMessageSet,得到(1018,800)这个位置信息，步骤3
+
+刷新数据到磁盘:flush()函数
+将recoverPoint~LogEndOffset之间的数据刷新到磁盘上，并修改recoverPoint值
+![](./picture/Log-flush-model.png)
+
+####LogManager####
+在一个Broker上所有Log都是由LogManager进行管理的。LogManager提供了加载Log、创建Log集合、删除Log集合、查询Log集合等功能，并且启动了3个周期性的后台任务以及Cleaner线程(可能不只一个)，分别是log-flusher(日志刷写)任务、log-retention(日志保留)任务、recovery-point-checkpoint(检查点刷新)任务以及Cleaner线程(日志清理)。
+
+关键字段：
+````
+logDirs:log目录集合，在server.properties配置文件中通过log.dirs项制定的多个目录。给么log目录下可以创建多个Log,每个Log都有自己对应的目录 LogManager在创建Log时会选择Log最少的log目录创建Log
+ioThreads:为完成Log加载的相关操作，每个log目录下分配指定的线程执行加载。
+scheduler:KafkaScheduler对象，用于执行周期性任务的线程池。与Log.flush()操作的scheduler是同一个对象
+logs:用于管理TopicAndPartition与Log之间的对应关系。使用kafka自定义的Pool类型对象，底层使用JDK提供的线程安全的ConcurrentHashMap实现
+dirLocks:FileLock集合。这些FileLock用来在文件系统层面为每个log目录加文件锁。在LogMananger对象初始化时，就会将所有log目录加锁
+recoveryPointCheckpoints:用于管理每个log目录与其下的RecoveryPointCheckpoint文件之间的映射关系。
+ 在LogManager对象初始化时，会在每个log目录下创建一个对应的RecoveryPointCheckpoint文件。此map的value是OffsetCheckpoint类型的对象，
+ 其中封装了对应log目录下的RecoveryPointCheckpoint文件，并提供对RecoveryPointCheckpoint文件的读写操作。
+ RecoveryPointCheckpoint文件中则记录了该log目录下的所有Log的recoveryPoint
+logCreationOrDeletionLock:创建或删除Log时需要加锁进行同步
+````
+
+**定时任务**
+在LogManager.startup()函数中，将三个周期性任务提交到scheduler中定时执行，并启动LogCleaner线程
+
+log-retention任务：
+核心方法：cleanupLogs()
+描述：按照两个条件进行LogSegment的清理工作：一个是LogSegment的存活时间，二是整个Log的大小。
+log-retention任务不仅会将过期的LogSegment删除，还会根据Log的大小决定是否删除最旧的LogSegment,以控制整个Log的大小
+
+log-flusher任务：
+核心方法：flushDirtyLogs()
+描述：根据配置的时长定时对Log进行flush操作，保证数据的持久性
+
+recovery-point-checkpoint任务
+核心方法:checkpointRecoveryPointOffsets()
+描述：定时将每个Log的recoveryPoint写入RecoveryPointCheckpoint文件中
+
+**日志压缩**
+此公国可以有效的减小日志文件的大小，环节磁盘紧张的情况。
+如果消费者只关系key对应的最新value值，可以开启kafka的日志压缩功能，服务端会在后台启动Cleaner线程池，定期将相同key的消息进行合并，并保留最新的value值。
+
+![](./picture/server-log-compress-model.png)
+
+activeSegment不会参与日志要操作，而是只压缩其余的只读的LogSegment。
+为了避免cleaner线程与其他业务线程长时间竞争CPU，并不会将activeSegment之外的所有LogSegment在一次压缩操作中全部处理掉，而是将这些LogSegment分批进行压缩。
+每个Log都可以通过cleaner checkpoint切分成clean和dirty两部分，clean部分表示的是之前已经被压缩过的部分，而dirty部分则表示未压缩的部分。
+
+每个Log需要进行日志压缩的迫切程度不同，每个cleaner线程只选取最迫切需要压缩的log进行处理。此“迫切程度”是通过cleanableRatio（dirty部分占整个log的比例）决定的
+
+cleaner线程在选定需要清理的log后，首先为dirty部分的消息建立key与其last_offset(此key出现的最大offset)的映射关系，该映射通过SkimpyOffsetMap维护。
+然后重新复制LogSegment，只保留SkimpyOffsetMap中记录的消息，抛弃掉其他消息。
+经过日志压缩后，日志文件和索引文件会不断减小，cleaner线程还会对相邻的LogSegment进行合并，避免出现过小的日志文件和索引文件
+
+在日志压缩时，value为空的消息会被认为是删除此key对应的消息的标志，此标志消息会保留一段时间，超时后会在下一次日志压缩操作中删除
+
+LogCleanerManager主要负责每个log的压缩状态管理以及cleaner checkpoint信息维护和更新
+
+关键字段：
+````
+checkpoints:用来维护data数据目录与cleaner-offset-checkpoint文件之间的对应关系
+inProgress:用于记录正在进行清理的TopicAndPartition的压缩状态
+lock:用于保护checkpoints集合和inProgress集合锁
+pausedCleaningCond:用于线程阻塞等待压缩状态由LogCleaningAborted转换为LogCleaningPaused
+````
+
+压缩状态图：
+![](./picture/log-compress-state-change-model.png)
+
+当开始进行日志压缩任务时会先进入LogCleanInProgress状态；
+压缩任务可以被暂停，此时进入LogCleaningPaused;
+压缩任务若被中断，则先进入LogCleaningAborted状态，等待cleaner线程将其中的任务中止，然后进入LogCleaningPaused状态。
+处于LogCleaningPaused状态的TopicAndPartition的日志不会再被压缩，直到有其他线程恢复其压缩状态
+
+Cleaner.clean()步骤
+![](./picture/Cleaner.clean-model.png)
+
+1. 首先，确定日志压缩的最大offset上限upperBoundOffset
+2. 从firstDirtyOffset开始遍历LogSegment，并填充OffsetMap。在OffsetMap中记录每个key应该保留的消息的offset。当OffsetMap被填充满时，就可以确定日志压缩的实际上限endOffset
+3. 根据deleteRetentionMs配置，计算可以安全删除的"删除标识"(即value为空的消息)的LogSegment
+4. 将logStartOffset到endOffset之间的LogSegment进行分组，并按照分组进行日志压缩
+
+**LogManager初始化**
+LogManager初始化过程中，除了完成上面三个定时任务，还会完成相关的恢复操作和Log加载。
+
+重要过程步骤：
+1. 为每个log目录分配一个有ioThreads条线程的线程池，用来执行恢复操作
+2. 检测Broker上次关闭是否正常，并设置Broker的状态。在Broker正常关闭时，会创建一个".kafka_cleansshutdown"的文件，通过此文件进行判断
+3. 载入每个Log的recoveryPoint
+4. 为每个Log创建一个恢复任务，交给线程池处理
+5. 主线程等待所有的恢复任务完成
+6. 关闭所有在步骤1中创建的线程池
+
+LogManager初始化主要是在LogManager.loadLogs()函数中执行的
+
+Log的初始化过程中会调用Log.loadSegments()函数。
+
+步骤：
+1. 删除".delete"和".cleaned"文件。
+2. 加载全部的日志文件和索引文件。如果索引文件没有配对的日志文件，则删除索引文件；如果日志文件没有对应的索引文件，则重建索引文件
+3. 处理步骤1中记录的".swap"文件，原理与日志压缩最后的步骤类似
+4. 对于非空的Log，需要创建activeSegment，保证Log中至少有一个LogSegment。而对于非空Log,则需要进行恢复操作
+
+##DelayedOperationPurgatory组件##
+主要功能是管理延迟操作，底层依赖kafka的时间轮实现。
+
+####TimeWheel####
+一个存储定时任务的环形队列，底层使用数组实现，数组中的每个元素可以存放一个TimerTaskList对象。TimerTaskList是环形双向链表
+![](./picture/kafka-time-wheel-model.png)
+
+一个例子：
+一个任务是在445ms后执行，默认情况下，各个层级的时间轮的时间格个数为20，
+第一层时间轮每个时间格的跨度为1ms，整个时间轮的跨度为20ms，跨度不够。
+第二次时间轮时间格的跨度为20ms，整个时间轮的跨度为400ms，跨度依然不够。
+第三层时间轮时间格跨度为400ms，整个时间轮的跨度为8000ms，跨度足够。此任务存放在第三层时间轮的第一个时间格对应的TimerTaskList中等待执行，此时TimerTaskList到期时间是400ms。
+随着时间的流逝，到此TimerTaskList到期时，距离该任务的到期时间还有45ms，不能执行任务。将其提交到层级时间轮中，此时第一层时间轮跨度依然不够，但是第二次时间轮的跨度足够，该任务会被放到第二层时间轮第三个时间格中等待执行。
+如此往复几次，高层时间轮的任务会慢慢移动到底层的时间轮上，最终任务到期执行。
+
+![](./picture/kafka-timer-wheel-example.png)
+
+关键字段：
+TimeTask使用了expiration字段记录了整个TimerTaskList的超时时间。TimerTaskEntry中的expirationMs字段记录了超时时间戳，timerTask字段指向了对应的TimeTask任务。
+TimeTask中的delayMs记录了任务的延迟时间，timerTaskEntry字段记录了对应的TimerTaskEntry对象。
+buckets:每一个项都对应时间轮中的一个时间格，用于保存TimerTaskList的数组。在TimingWheel中，同一个TimerTaskList中的不同定时任务到期时间可能不同，但是相差时间在同一个时间格的范围内
+tickMs:当前时间轮中一个时间格表示的时间跨度
+wheelSize:当前时间轮的格数，即buckets的大小
+taskCounter:各层级时间轮中任务的总数
+startMs:当前时间轮的创建时间
+queue:DelayQueue类型，整个层级时间轮共用的一个任务队列，其元素类型是TimerTaskList
+currentTime:时间轮的指针，将整个时间轮划分为到期部分和未到期部分。在初始化时，currentTime被修剪成tickMs的倍数，近似等于创建时间，但并不是严格的创建时间
+interval:当前时间轮的时间跨度，即tickMs*wheelSize。当前时间轮只能处理时间范围在currentTime~currentTime+tickMs*wheelSize之间的定时任务，超过这个范围，则需要将任务添加到上层时间轮中
+overflowWheel:上层时间轮的引用
+
+####SystemTimer####
+kafka中的定时器实现，在TimeWheel的基础上添加了执行到期任务、阻塞等待最近到期任务的功能
+
+####DelayedOperation####
+服务端在收到ProducerRequest和FetchRequest这两种请求的时候，并不是立即响应，可能会等一段时间后才返回。
+
+对于ProducerRequest，其中的acks字段设置为-1，表示ProducerRequest发送到Leader副本后，需要ISR集合中所有副本都同步该请求中的消息(或超时)后，才能返回响应给客户端
+ISR集合中的副本分布在不同Broker上，与Leader副本进行同步时就设计网络通信，一般情况下，网络传输是不可靠而且是一个较慢的过程，通常采用异步的方式处理来避免线程长时间等待。
+
+当FetchRequest发送给Leader副本后，会积累一定量的消息后才返回给消费者或者Follower副本，并不是Leader副本的HW后移一条消息就立即返回给消费者，这是为了实现批量发哦少年宫，提高有效负载。
+
+DelayedOperation表示延迟操作，对TimeTask进行扩展，除了有定时执行的功能，还提供了检测其他执行条件的功能。
+
+DelayedOperation可能因为到期而被提交到SystemTimer.taskExecutor线程池中执行，也可能在其他线程检测其执行条件时发现已经满足执行条件，而将其执行。
+
+DelayedOperation执行条件示意图
+![](./picture/DelayedOperation-run-condition.png)
+
+####DelayedOperationPurgatory####
+提供了管理DelayedOperation以及处理到期DelayedOperation的功能。
+
+####DelayedProduce####
+ProducerRequest的在服务端的处理流程是：
+在KafkaApis中处理ProducerRequest的方法是handleProducerRequest()函数，他会调用ReplicaManager.appendMessages()函数将消息追加到Log中，生成响应的DelayedProduce对象，并添加到delayedProducePurgatory处理。
+
+1. 生产者发送ProducerRequest向某些指定分区追加消息
+2. ProducerRequest经过网络层和API层的处理到达ReplicaManager，它会将消息交给日志存储子系统进行处理，最终追加到对应的Log中。同时还会检测delayedFetchPurgatory中相关key对应的DelayedFetch，满足条件则将其执行完成
+3. 日志存储子系统返回追加消息的结果
+4. ReplicaManager为ProducerRequest生成DelayedProduce对象，并交由delayedProducePurgatory管理
+5. delayedProducePurgatory使用SystemTimer管理DelayedProduce是否超时
+6. ISR集合中的Follower副本发送FetchRequest请求与Leader副本同步消息。同时，也会检查DelayedProduce是否符合执行条件
+7. DelayedProduce执行时会调用回调函数产生ProducerResponse，并将其添加到RequestChannelszhong 
+8. 由网络层将ProducerResponse返回给客户端。
+
+![](./picture/ProducerRequest-DelayedProduce-handle-flow.png)
+
+####DelayedFetch####
+DelayedFetch是FetchRequest对应的延迟操作，原理与DelayedProduce类似。
+来自消费者或者Follower副本的FetchRequest由KafkaApis.handleFetchRequest()函数处理，他会调用ReplicaManager.fetchMessages()函数从响应的Log中读取消息，并生成DelayedFetch添加到delayedFetchPurgatory中处理
+
+来自follower的副本流程
+1. Follower副本发送FetchRequest，从某些分区中获取消息
+2. FetchRequest经过网络层和API层的处理，到达ReplicaManager，它会从日志子系统中读取数据，并检测是否要更新ISR集合、HW等，之后还会执行delayedProducePurgatory中满足条件的相关DelayedProduce.
+3. 日志存储子系统返回读取消息以及相关信息，例如此次读取到的offset等
+4. ReplicaManager为FetchRequest生成DelayFetch对象，并交由delayedProducePurgatory管理
+5. delayedFetchPurgatory使用SystemTimer管理DelayedFetch是否超时
+6. 生产者发送ProduceRequest请求追加消息，同时也会检查DelayedFetch是否符合执行条件
+7. DelayedFetch执行时会调用回调函数产生FetchResponse，添加到RequestChannels中
+8. 由网络层将FetchResponse返回给客户端
+
+![](./picture/DelayedFetch-model.png)
+
+
+##副本机制##
+每个分区可以有多个副本，并且会从其副本集合中选出一个副本作为Leader副本，所有的读写请求都由选举出的Leader副本处理。剩余的其他副本都作为Follower副本，Follower副本会从leader副本处获取消息，并更新到自己的log中。
+可以认为follower副本是leader副本的热备份。
+
+####副本####
+在一个分区的leader副本中会维护自身以及所有follower副本的相关状态，而follower副本只维护自己的状态。
+本地副本：副本对应的Log分配在当前的broker上；
+远程副本：副本对应的Log分配在其他的broker上；
+
+在当前broker上仅仅维护了副本的LogEndOffset等信息。
+一个副本是"本地副本"还是"远程副本"与它是leader副本还是follower副本没有直接联系
+
+![](./picture/leader-follower-model.png)
+
+kafka使用Replica对象表示一个分区的副本。重要字段：
+````
+brokerId:标识该副本所在的broker的id。区分一个副本是"本地副本"还是"远程副本"，可以通过Replica.brokerId字段与当前broker的id进行比较
+highWatermarkMetadata：用来记录HW(HighWatermark)的值。消费者只能获取到HW之前的消息，其后的消息对消费者是不可见的。
+ 此字段由leader副本负责维护，更新时机是消息被ISR集合中所有副本成功同步，即消息被成功提交。
+logEndOffsetMetadata：对于本地副本，此字段记录的是追加到Log中的最新消息的offset，可以直接从Log.nextOffsetMetadata字段中获取。
+ 对于远程福分，此字段含义相同，但是由其他Broker发送请求来更新此值，并不能直接从本地获取到
+partition:此副本对应的分区
+log:本地副本对应的Log对象，远程副本此字段为空
+lastCaughtUpTimeMsUnderlying：用于记录follower副本最后一次追赶上leader的时间戳
+````
+
+####分区####
+服务端使用Partition表示分区，Partition负责管理每个副本对应的Replica对象，进行leader副本的切换，ISR集合的管理以及调用日志存储子系统完成写入消息，以及一些其他的辅助方法。
+
+````
+topic:此partition对象代表的topic名称
+partitionId：此partition对象代表的分区编号
+localBrokerId：当前broker的id，可以与replicaId比较，从而判断指定的Replica是否表示本地副本
+logManager：当前broker上的LogManager对象
+zkUtils：操作ZooKeeper的辅助类
+leaderEpoch:leader副本的年代信息
+leaderReplicaIdOpt：该分区的leader副本的id
+inSyncReplicas：该集合维护了分区的ISR集合，ISR集合是AR集合的子集
+assignedReplicaMap：维护了该分区的全部副本的集合（AR集合）的信息
+````
+
+**创建副本**
+getOrCreateReplica()函数主要负责在AR集合(assignedReplicaMap)中查找指定副本的Replica对象，如果查找不到则创建Replica对象，并添加到AR集合中进行管理。如果创建是Local Replica，还会创建(或恢复)对应的Log并初始化(或恢复)HW
+HW与Log.recoveryPoint类似，也会需要记录文件中保存，在每个lig目录下都有一个replication-offset-checkpoint文件记录了此目录下每个分区的HW.
+在ReplicaManager启动时，会读取此文件到highWatermarkCheckpoints这个map中，之后会定时更新replication-offset-checkpoint文件
+
+**副本角色切换**
+Broker会根据KafkaController发送的LeaderAndISRRequest请求控制副本的leader/follower角色切换。
+
+**ISR集合管理**
+Partition除了对副本的leader/follower角色进行管理，还需要管理ISR集合。随着follower副本不断与leader副本进行消息同步，follower副本的LEO会逐渐后移，并最终赶上leader副本的LEO，此时该follower副本就有资格进入ISR集合。
+
+主要是maybeExpandIsr()函数和maybeShrinkIsr()函数
+
+在ISR集合发生增减的时候，都会将最新的ISR集合保存到zookeeper中，具体的保存路径是:/brokers/topics/[topic_name]/partitions/[partitionId]/state
+
+**追加消息**
+在分区中，只有leader副本能够处理读写请求。Partition.appendMessagesToLeader()函数提供了向leader副本对应的Log中追加消息的功能。
+
+**checkEnoughReplicasReachOffset**
+此函数会检测其参数指定的消息是否已经被ISR集合中所有follower副本同步
+
+####ReplicaManager####
+
+管理一个broker范围内的Partition信息
+此实现依赖于日志存储子系统,DelayedOperationPurgatory、KafkaScheduler组件。底层依赖于Partition和Replica
+关键字段：
+logManager:对分区的读写操作都委托给底层的日志存储子系统
+scheduler:用于执行ReplicaManager中的周期性定时任务。在ReplicaManager中总共有三个周期性任务:highwatermark-checkpoint、isr-expiration、isr-change-propagation
+controllerEpoch:记录KafkaController年代信息，当重新选举controller leader时该字段值会递增。之后，在ReplicaManager处理来自KafkaController的请求时，
+ 会先检测请求中携带的年代信息是否等于controllerEpoch的值，就避免了接受旧controller leader发送的请求。
+localBrokerId：当前broker的id，用于查找local replica
+allPartitions:保存了当前broker上分配的所有partition信息。
+replicaFetcherManager，在ReplicaFetcherManager中管理了多个ReplicaFetcherThread线程，ReplicaFetcherThread线程会向leader副本发送FetchRequest请求来获取消息，实现follower副本与leader副本同步。
+ ReplicaFetchManager对象在ReplicaManager初始化时被创建。
+highWatermarkCheckpoints：用于缓存每个log目录与OffsetCheckpoint之间的对应关系，OffsetCheckpoint记录了对应log目录下的replication-offset-checkpoint文件，该文件中记录的data目录下每个partiton的HW
+ ReplicaManager中的highwatermark-checkpoint任务会定时更新replication-offset-checkpoint文件的内容
+isrChangeSet:用于记录ISR集合发生变化的分区信息
+delayedProducePurgatory、delayedFetchPurgatory：用于管理DelayedProduce和DelayedFetch的DelayedOperationPurgatory对象
+zkUtils：操作Zookeeper的辅助类
+
+**副本角色切换**
+在kafka集群会选举一个broker成为KafkaController的leader，它负责管理整个kafka集群。
+controller leader根据partition的leader副本和follower副本的状态向对应的broker节点发送LeaderAndIsrRequest，这个请求用于副本的角色切换，
+
+线路图：
+![](./picture/change-role-flow.png)
+
+**追加/读取消息**
+appendToLocalLog()函数和readFromLocalLog()函数
+
+updateFollowerLogReadResults():当ISR集合中所有follower副本都已经同步了某消息时，kafka认为消息已经成功提交，可以将HW后移。所以针对来自follower副本的FetchRequest多了一步处理.
+
+**消息同步**
+follower副本与leader副本同步的功能是由ReplicaFetcherManager组件实现
+
+**关闭副本**
+当broker收到来自KafkaController的StopReplicaRequest时，会关闭其指定的副本，并根据StopReplicaRequest中的字段决定是否删除副本对应的Log.在分区副本进行重新分配、关闭Broker等过程中都会使用此请求。
+在重新分配Partition副本时，就需要将旧副本及其log删除
+
+主要是ReplicaManager.stopReplicas()函数进行处理
+
+**ReplicaManager中的定时任务**
+highwatermark-checkpoint:会周期性的记录每个Replica的HW，并保存到其他log目录中的replication-offset-checkpoint文件中
+isr-expiration:周期性的调用maybeShrinkIsr()函数检测每个分区是否需要缩减其ISR集合
+isr-change-propagation:周期性的将ISR集合发生变化的分区记录到Zookeeper中
+
+**MetadataCache**
+MetadataCache是broker用来缓存整个集群中全部分区状态的组件。
+KafkaController通过向集群中的broker发送UpdateMetadataRequest请求来更新其MetadataCache中缓存的数据，每个broker在收到该请求后会异步更新MetadataCache中的数据
+
+##KafkaController##
+在kafka集群的多个broker中，有一个broker会被选举为controller leader，负责管理整个集群中所有的分区的副本的状态。
+例如当某分区的leader副本出现故障时，由controller负责为该分区重新选举新的leader副本；
+当使用kafka-topics脚本增加某topic的分区数量，由controller管理分区的重新分配；
+当检测到分区的ISR集合发生变化时，由controller通知集群中所有的broker更新其MetadataCache信息
+
+为了实现Controller的高可用，一个broker被选为leader之后，其他的broker都会成为follower，，会从剩下的follower中选出新的follower中选出新的controller leader来管理集群。
+
+选举controller leader依赖于zookeeper实现，每个broker启动时都会创建一个KafkaController对象，但是集群中只能存在一个controller leader来对外提供服务。
+在集群启动时，多个broker上的KafkaController会在指定路径下竞争创建节点，只有第一个成功创建节点的KafkaController才能成为leader，而其余的KafkaController则成为follower
+当leader出现故障之后，所有的follower会收到通知，再次竞争在该路径下创建节点，从而选出新的leader。
+
+/brokers/ids/[id]:记录集群中可用broker的id
+/brokers/topics/[topic]/partitions:记录一个topic中所有分区的分配信息以及AR集合信息
+/brokers/topics/[topic]/partitions/[partition_id]/state:记录某个partition的leader副本所在的brokerId、lead_epoch、ISR集合、ZKVersion信息
+/controller_epoch:记录当前controller leader的年代信息
+/controller:记录当前controller leader的id，也用于controller leader 选举
+/admin/reassign_partitions:记录需要进行副本分重新分配的分区
+/admin/preferred_replica_election:记录里需要进行"优先副本的"选举的分区。
+/admin/delete_topics:记录了待删除的topic
+/isr_change_notification:记录一段时间之内ISR集合发生变化的分区
+/config:记录一些配置信息
+
+![](./picture/kafka-zookeeper-node.png)
+
+
+KafkaController是zookeeper与kafka集群交互的桥梁：一方面对zookeeper进行监听，其中过包括broker写入到zookeeper中的数据，也包括管理员使用脚本写入的数据；
+另一方面根据zookeeper中数据的变化做出相应的处理，通过LeaderAndIsrRequest/StopReplicaRequest/UpdateMetadataRequest等请求控制每个broker的工作
+而且KafkaController本身也通过zookeeper提供了高可用的机制
+
+####ControllerChannelManager####
+KafkaController使用ControllerChannelManager管理其与集群中各个broker之间的网络交互。
+
+####ControllerContext####
+KafkaController的上下文信息，缓存了zookeeper中记录的整个集群的元信息。如可用broker、全部topic、分区、副本
+可以看做zookeeper数据的缓存
+
+####ControllerBrokerRequestBatch####
+向broker批量发送请求的功能
+
+####PartitionStateMachine####
+管理集群中所有partition状态的状态机
+
+分区状态转换图：
+![](./picture/partition-state-change.png)
+
+NonExistentPartition->NewPartition
+从zookeeper中加载分区的AR集合到ControllerContext的partitionReplicaAssignment集合中
+
+NewPartition->OnlinePartition
+首先将leader副本的ISR集合的信息写入到zookeeper中，这里会将分区的AR集合中第一个可用的副本选举为leader副本，并将分区的所有可用副本作为ISR集合。
+之后向所有可能的副本发送LeaderAndIsrRequest，指导这些副本进行leader/follower的角色切换，并向所有可用的broker发送UpdateMetadataRequest来更新其上的MetadataCache
+
+OnlinePartition/OfflinePartition->OnlinePartition
+为分区选择新的leader副本和ISR集合，并将结果写入zookeeper。之后，向需要进行角色切换的副本发送LeaderAndIsrRequest，指导这些副本进行Leader/Follower的角色进行切换，并向所有可用的broker发送UpdateMetadataRequest来更新其上的MetadataCache
+
+NewPartition/OnlinePartition->OfflinePartition
+只进行状态切换，并没有其他的操作
+
+OfflinePartition->NonExistentPartition
+只进行状态切换，并没有其他的操作
+
+
+####PartitionLeaderSelector####
+Leader副本选举、确定ISR集合的
+
+NoOpLeaderSelector：没有进行leader选举，而是将currentLeaderAndIsr直接返回，需要接收以及需要接收LeaderAndIsrRequest的broker则是分区的AR集合
+OfflinePartitionLeaderSelector：会根据currentLeaderAndIsr选举新的leader和ISR集合。 策略如下
+	1. 如果在ISR集合中存在至少一个可用的副本，则从ISR集合中选择新的Leader副本，当前ISR集合为新ISR集合
+	2. 如果ISR集合中没有可用的副本，且"unclean leader election"配置被禁用，那么就抛出异常
+	3. 如果"unclean leader election"被开，则从AR集合中选择新的leader副本和ISR集合
+	4. 如果AR集合中没有可用的副本，抛出异常
+ReassignedPartitionLeaderSelector：涉及到副本的重新分配。
+	选取的新leader必须在新指定的AR集合中，且同时在当前ISR集合中，当前ISR集合为新ISR集合，接收LeaderAndIsrRequest的副本是新指定的AR集合中的副本
+PreferredReplicaPartitionLeaderSelector：如果"优先副本"可用且在ISR集合中，则选取其为leader副本，当前的ISR集合为新的ISR集合，并向AR集合中所有可用副本发送LeaderAndIsrRequest，否则会抛出异常
+ControlledShutdownLeaderSelector：从当前ISR集合中排除正在关闭的副本后作为新的ISR集合，从新ISR集合中选择新的leader，需要向AR集合中可用的副本发送LeaderAndIsrRequest
+
+####ReplicaStateMachine####
+controller leader用于维护副本状态的状态机。
+一共有7个状态：
+NewReplica：创建新topic或进行副本重新分配时，新创建的副本就处于此状态。处于此状态的副本只能成为follower副本
+OnlineReplica：副本开始正常工作时处于此状态，处在此状态的副本可以成为leader副本，也可以成为follower副本
+OfflineReplica：副本所在的broker下线后，会转换为此状态
+ReplicaDeletionStarted：刚开始删除副本时，会先将副本状态转换为此状态，然后开始删除
+ReplicaDeletionSuccessful：副本被成功删除后，副本状态会处于此状态
+ReplicaDeletionIneligible：如果副本删除操作失败，会将副本转换为此状态
+NonExistentReplica：副本被成功删除后，最终转换为此状态
+
+副本状态切换：
+![](./picture/ReplicaState-change-model.png)
+
+NonExistentReplica -> NewReplica
+controller向此副本所在的broker发送LeaderAndIsrRequest，并向集群中所有可用的broker发送UpdateMetadataRequest
+
+NewReplica -> OnlineReplica
+controller将NewReplica加入到AR集合中
+
+OnlineReplica/OfflineReplica -> OnlineReplica
+controller向此副本所在的broker发送LeaderAndIsrRequest，并向集群中所有可用的broker发送UpdateMetadataRequest
+
+NewReplica/OnlineReplica/OfflineReplica/ReplicaDeletionIneligible -> OfflineReplica
+controller向副本所在的broker发送StopReplicaRequest，之后会从ISR集合中清除此副本，最后向其他可用副本所在的broker发送LeaderAndIsrRequest，并向集群中所有可用的broker发送UpdateMetadataRequest
+
+OfflineReplica -> ReplicaDeletionStarted
+controller向副本所在broker发送StopReplicaRequest
+
+ReplicaDeletionStarted -> ReplicaDeletionSuccessful
+只做状态转换，并没有其他操作
+
+ReplicaDeletionStarted -> ReplicaDeletionIneligible
+只做状态转换，并没有其他操作
+
+ReplicaDeletionSuccessful -> NonExistentReplica
+controller从AR集合中删除此副本
+
+设置每个副本状态的根据是controllerContext.partitionLeadershipInfo中记录的broker状态
+
+####zookeeper listener####
+在zookeeper的指定节点上添加listener，监听此节点中的数据变化或是其子节点的变化，从而出发相应的逻辑业务
+
+**TopicChangeListener**
+负责管理topic的增删，监听"/brokers/topics"节点的子节点变化
+
+**TopicDeletionManager与DeleteTopicsListener**
+TopicDeletionManager中维护了多个集合，用于管理待删除的topic和不可删除的集合，他会启动一个DeleteTopicsThread线程来执行删除topic的具体逻辑
+当topic满足下列三种情况之一时，不能被删除：
+1. 如果topic中的任一分区正在重新分配副本，则此topic不能被删除
+2. 如果topic中的任一分区正在进行"优先副本"选举，则此topic不能被删除
+3. 如果topic中的任一分区的任一副本所在的broker宕机，则此topic不能删除
+
+删除的过程主要在DeleteTopicsThread.doWork()中进行
+1. 获取待删除topic的分区集合，构成UpdateMetadataRequest发送给所有的broker，将broker中MetadataCache的相关信息删除，这些分区不再对外提供服务
+2. 调用onTopicDeletion()函数开始对指定分区进行删除
+	a. 将不可用副本转换成ReplicaDeletionIneligible状态
+	b. 将可用副本转换成OfflineReplica状态，此步骤会发送StopReplicaRequest到待删除的副本(不会删除副本)，   同时还会向可用的broker发送LeaderAndIsrRequest和UpdateMetadataRequest，将副本从ISR集合中删除
+	c. 将可用副本由OfflineReplica转换成ReplicaDeletionStarted,此步骤会想可用副本发送StopReplicaRequest（删除副本），并设置回调函数处理StopReplicaResponse
+3. 调用deleteTopicsStopReplicaCallback()处理StopReplicaResponse
+	a. 如果StopReplicaResponse中的错误码表示出现异常，则将副本状态转换为ReplicaDeletionIneligible，并标记此副本所在topic不可删除，即将topic添加到topicsIneligibleForDeletion队列，最后幻想DeleteTopicsThread线程
+	b. 如果StopReplicaResponse正常，则将副本状态转换为ReplicaDeletionSuccessful，并唤醒DeleteTopicsThread线程
+4. 经过上述三个步骤后，开始第二次doWork()调用。如果待删除的Topic的所有副本已经处于ReplicaDeletionSuccessful状态，调用completeDeleteTopic()函数完成topic的删除
+	a. 取消partitionModificationsListeners监听
+	b. 将此topic的所有副本从ReplicaDeletionSuccessful转换为NonExistentReplica。此步骤会将副本对应的Replica对象从ControllerContext中删除
+	c. 将topic的所有分区换换为OfflineReplica状态，紧接着会再转换为NonExistentReplica
+	d. 将topic和相关的分区从topicsToBeDeleted集合和partitionsToBeDeleted集合中删除
+	e. 删除zookeeper以及ControllerContext中与此topic相关的全部信息
+5. 如果还有副本处于ReplicaDeletionStarted状态，则表示还没有收到StopReplicaResponse，则继续等待
+6. 如果topic的任一副本处于ReplicaDeletionIneligible状态，则表示此topic不能被删除，调用markTopicForDeletionRetry()将处于ReplicaDeletionIneligible状态的副本重新转换成OfflineReplica状态。按2->b中的流程
+
+
+DeleteTopicsListener：监听zookeeper中"/admin/delete_topics"节点下子节点变化。
+
+当TopicCommand在该路径下添加需要被删除的topic时，DeleteTopicsListener会被触发，他会将该待删除的topic交由TopicDeletionManager执行topic删除操作
+
+**PartitionModificationsListener**
+监听"/brokers/topics/[topic_name]"节点中的数据变化，主要用于监听一个topic的分区变化。
+
+**BrokerChangeListener**
+监听"/brokers/ids"节点下的子节点变化，主要负责处理broker的上线和故障下线。当broker上线时会在"/brokers/ids"下创建临时节点，下线时会删除对应的临时节点。
+
+**IsrChangeNotificationListener**
+当follower副本追上leader副本时，会被添加到ISR集合中，当follower副本与leader副本差距太大时会被剔除ISR集合。
+leader副本不仅会在ISR集合变化时将其记录到zookeeper中，还会调用ReplicaManager.recordIsrChanege()函数，记录到isrChangeSet集合中，之后通过isr-change-propagation定时任务将该集合中周期性的写入到zookeeper的"/isr_change_notification"路径下。
+
+IsrChangeNotificationListener用于监听"/isr_change_notification"路径下的子节点变化，当某些分区的ISR集合变化时，通知整个集群中的所有broker
+
+**PreferredReplicaElectionListener**
+负责监听zookeeper节点"/admin/preferred_replica_election"。
+当我们通过PreferredReplicaLeaderElectionCommand命令指定某些分区进行"优先副本"选举时，会将指定分区的信息写入该节点，从而触发PreferredReplicaElectionListener进行处理。进行"优先副本"选举的目的是让分区的"优先副本"重新成为leader副本
+
+**副本重新分配的相关Listener**
+
+PartitionsReassignedListener监听的是zookeeper节点"/admin/reassign_partitions".
+当管理人员通过ReassignPartitionsCommand命令指定某些分区需要重新分配副本时，会将指定分区的信息写入该节点，从而触发PartitionsReassignedListener进行处理
+
+副本重新分配的步骤:
+1. 从zookeeper的"/admin/reassign_partitions"节点下读取分区进行重新分配信息
+2. 过滤掉正在进行重新分配的分区
+3. 检测其topic是否为待删除的topic，如果是，则调用KafkaController.removePartitionFromReassignedPartitions()函数
+	a. 取消此分区注册的ReassignPartitionsIsrListener.
+	b. 删除zookeeper的"/admin/reassign_partitions"节点中与当前分区相关的数据
+	c. 从partitionsBeingReassigned集合中删除分区相关的数据
+4. 否则，创建ReassignedPartitionsContext,调用initiateReassignReplicasForTopicPartition()方法开始为重新分配副本的做一些准备工作
+	a. 首先，获取当期那的旧AR集合和指定的新AR集合
+	b. 比较新旧两个AR集合，若两者完全一样，则抛出异常，执行步骤3的操作后结束
+	c. 判断新AR集合中涉及的broker是否都是可用的，若不是抛出异常，执行步骤3的操作后结束
+	d. 为分区添加注册ReassignPartitionsIsrChnageListener
+	e. 将分区添加到partitionsBeingReassigned集合中，并标识该topic不能被删除
+	f. 调用onPartitionReassignment()函数，开始执行副本重新分配
+5. onPartitionReassignment()函数完成了副本分配的整个流程
+6. 判断新AR集合中的所有副本是否已经进入ISR集合。如果没有，则执行下面的步骤
+	a. 将分区在ContextController和zookeeper中的AR集合更新成"新AR+旧AR"
+    b. 向"新AR+旧AR"发送LeaderAndIsrRequest，此步骤主要目的是为了增加zookeeper中记录的leader_epoch值
+    c. 将"新AR-旧AR"中的副本更新成NewReplica状态，此步骤会向这些副本发送LeaderAndIsrRequest使其称为follower副本，并发送UpdateMetadataRequest
+7. 如果新AR集合中的副本已经进入了ISR集合，则执行下面的步骤
+	a. 将新AR集合中的所有副本都转换成OnlineReplica状态
+    b. 将ControllerContext中的AR记录更新为新AR集合
+    c. 如果当前leader副本在新AR集合中，则递增zookeeper和ControllerContext中记录的leader_epoch值，并发送LeaderAndIsrRequest和UpdateMetadataRequest
+    d. 如果当前leader不在新AR集合中或leader副本不可用，则将分区状态转换为OnLinePartition(之前也是OnlinePartition)，主要目的使用ReassignedPartitionLeaderSelector选举新的leader副本，使得新AR集合中的一个副本成为新leader副本，然后会发送LeaderAndIsrRequest和UpdateMetadataRequest
+    e. 将"旧AR-新AR"中的副本转换成为OfflineReplica，此步骤会发送StopReplicaRequest(不删除副本)，清理ISR集合中的相关副本，并发送LeaderAndIsrRequest和UpdateMetadataRequest
+    f. 接着将"旧AR-新AR"中的副本转换成ReplicaDeletionStarted，此步骤会发送StopReplicaRequest(删除副本)。完删除后，将副本转换成ReplicaDeletionSuccessful,最终转换成NonExistentReplica。
+	g. 更新zookeeper中记录的AR信息
+	h. 将此分区的相关信息从zookeeper的"/admin/reassign_partitions"节点中移除
+	i. 向所有可用的broker发送一次UpdateMetadataRequest
+	j. 尝试取消相关的topic的"不可删除"标记，并幻想DeleteTopicsThread线程。
+	
+
+####KafkaController初始化与故障转移####
+在kafka集群中，只有一个controller能够成为leader来管理整个集群，而其他未成为Controller leader的broker上也会创建一个KafkaController对象，他们唯一能做的事情就是当controller leader出现故障，不能继续管理集群时，竞争成为新的controller leader
+
+KafkaController启动过程由KafkaController.startup()完成，其中会注册SessinExpirationListener，并启动ZookeeperLeaderElector
+
+**onControllerFailover**
+当前broker成功选举为controller leader时，会通过此方法完成初始化操作
+
+**Partition Rebalance**
+在KafkaController.onControllerFailover()函数中会启动一个名为"partition-rebalance"的周期性的定时任务，它提供了分区的自动均衡功能。
+该定时任务会周期性的调用KafkaController.checkAndTriggerPartitionRebalance()函数，对失衡的broker上相关的分区进行"优先副本"重新成为leader副本，整个集群中leader副本的分布也会重新恢复平衡。
+
+**onControllerResignation**
+"/controller"中数据删除或改变时，controller leader 需要通过此函数进行一些清理工作
+
+####处理ControllerShutdownRequest####
+Kafka提供了controlled shutdown的方式来庀一个broker实例
+通过此方式可以：
+1. 可以让日志文件完全同步到磁盘上，在broker下次重新上线时，不需要进行log的恢复操作；
+2. 在关闭broker之前，会对其上的leader副本进行迁移，可以减少分区不可用时间
+
+##GroupCoordinator##
+在每一个broker上都会实例化一个GroupCoordinator对象，kafka按照Consumer group的名称将其分配给对应的GroupCoordinator进行管理；
+每个GroupCoordinator只负责管理consumer group的一个子集，而非集群中全部consumer group.
+
+![](./picture/GroupCoordinator-model.png)
+
+功能:
+1. 负责处理JoinGroupRequest和SyncGroupRequest完成consumer group中分区的分配工作；
+2. 通过GroupMetadataManager和内部topic"Offsets Topic"维护offset信息,即使出现消费者宕机，也可以找回之前提交的offset
+3. 记录consumer group的相关信息，即使broker宕机导致consumer group由新的GroupCoordinator进行管理，新GroupCoordinator也可以知道consumer group中每个消费者负责处理哪个分区等信息；
+4. 通过心跳检测消费者的状态
+
+并且会记录每个consumer group 的offset信息
+
+GroupCoordinator使用MemberMetadata记录消费者的元数据
+GroupMetadata记录了consumer group的元数据
+
+GroupCoordinator使用GroupTopicPartiton维护consumer group的分区的消费关系，使用OffsetAndMetadata记录offset的相关信息
+
+####GroupMetadataManager####
+是GroupCoordinator中负责consumer group 元数据以及对应offset的信息组件。GroupMetadataManager底层使用Offsets Topic,以消息的形式存储consumer group的GroupMetadata信息以及消费的每个分区的offset
+
+![](./picture/consumer_group_offset-model.png)
+
+**groupCache管理与offsetsCache管理**
+主要是对groupCache和offsetsCache的增删，以及删除时候做的一些事情
+
+**查找GroupCoordinator**
+KafkaApis.handleGroupCoordinatorRequest()函数负责处理
+消费者与GroupCoorinator交互之前，首先会发送GroupCoordinatorRequest到负载较小的broker，目的是查询管理其所在的consumer group对应的GroupCoordinator的网络位置。
+之后消费者会连接到GroupCoordinator，发送剩余的JoinGroupRequest和SyncGroupRequest
+
+GroupCoordinator与partition与consumer group的对应关系：
+![](./picture/GroupCoordinator-partition-consumer-group-model.png)
+
+**GroupCoordinator迁移**
+默认配置下，offsets topic有50个分区，每个分区有3个副本。
+当某个leader副本所在的broker出现故障时，会发生迁移，那么consumer group则由新leader副本所在的broker上运行的GroupCoordinator负责管理。
+
+在KafkaApis.handleLeaderAndIsrRequest()函数中进行处理
+
+当broker成为offsets topic分区的leader副本时，会回调GroupCoordiantor.handleGroupImmigration()函数进行加载，
+在GroupCoordiantor.loadGrousForPartition()函数中，通过KafkaScheduler以任务的形式调用loadGroupsAndOffsets()函数，而当前线程直接返回。
+
+步骤：
+1. 检测当前offsets topic分区是否正在加载。如果是，则结束本次加载操作，否则将其加入loadingPartitions集合，标识该分区正在进行加载
+2. 通过ReplicaManager组件得到此分区对应的log对象。
+3. 从log对象中的第一个LogSegment开始加载，加载过程中可能会碰到记录了offset信息的消息，也有可能碰到记录GroupMetadata信息的消息，还有可能是"删除标记"消息，需要区分处理
+	a. 如果是记录offset信息的消息且是"删除标记"，则删除offsetsCache集合中对应的OffsetAndMetadata对象。
+	b. 如果是记录offset信息的消息且不是"删除标记"，则解析消息形成OffsetAndMetadata对象，添加到offsetsCache集合中。
+	c. 如果是记录GroupMetadata信息的消息，则统计是否为"删除标记"，在步骤4中处理
+4. 根据步骤3.c中的统计，将需要加载的GroupMetadata信息加载到groupsCache集合中，并检测需要删除的GroupMetadata信息是否还在groupsCache集合中
+5. 将当前offsets topic分区的id从loadingPartitions集合移入ownedPartitions集合，标识该分区加载完成，当前GroupCoordinator开始正式负责管理其对应的consumer group
+
+当broker成为offsets topic分区的follower副本时，会回调GroupCoordinator.handleGroupEmigration()函数进行清除工作。
+主要是removeGroupsAndOffsets()函数：
+1. 从ownedPartitions集合中将对应的offsets topic分区删除，标识当前GroupCoordinator不再管理其对应的consumer group
+2. 遍历offsetsCache集合，将此分区对应的OffsetAndMetadata全部清除
+3. 遍历groupsCache集合，将此分区对应的GroupMetadata全部清除
+
+**SyncGroupRequest相关处理**
+consumer group的leader消费者通过SyncGroupRequest将分区的分配结果发送给GroupCoordinator，GroupCoordinator会根据分配结果形成SyncGroupResponse返回给所有消费者，消费者收到SyncGroupResponse后进行解析
+
+GroupCoordinator除了会将根据分区分配结果发送给所有消费者，还会将其形成消息，追加到对应的offsets topic分区总。
+
+GroupMetadataManager.prepareStoreGroup()函数实现了根据分区分配结果创建消息的功能
+
+**OffsetCommitRequest相关处理**
+消费者在进行正常的消费过程以及rebalance操作之前，都会进行提交offset的操作，其核心人物是将消费者消费的每个分区对应的offset封装成OffsetCommitRequest发送给GroupCoordinator。
+GroupCoordinator会将这些offset封装成消息，追加到对应的offsets topic分区中
+
+**OffsetFetchRequest与ListGroupsRequest相关处理**
+当Consumer group宕机后重新上线时，可以通过向GroupCoordinator发送OffsetFetchRequest获取最近一次提交的offset，并从此位置重新开始进行消费。
+GroupCoordinator在收到OffsetFetchRequest后会提交给GroupMetadataManager进行处理，他会根据请求中的groupId查找对应的OffsetAndMetadata对象，并返回给消费者。
+
+从KafkaApis.handleOffsetFetchRequest()开始
+
+####GroupCoordinator分析####
+
+**GroupState**
+PreparingRebalance:consumer group正在准备进行Rebalance
+当consumer group处于此状态时，GroupCoordinator可以正常的处理OffsetFetchRequest、LeaveGroupRequest、OffsetCommitRequest,
+但是对于收到HeartbeatRequest和SyncGroupRequest，则会在其响应中携带REBALANCE_IN_PROGRESS错误码进行标识。
+当收到JoinGroupRequest时，GroupCoordinator会先创建对应的DelayJoin，等待条件满足后对其进行响应
+PreparingRebalance -> AwaitingSync:当有DelayedJoin超时或是consumer group之前的member都已经重新申请加入时进行切换
+
+AwaitingSync:consumer group当前正在等待group leader将分区的分配结果发送到GroupCoordinator
+当consumer group处于AwaitingSync时，标识正在等待Group leader的SyncGroupRequest.当GroupCoordinator收到OffsetCommitRequest和HeartbeatRequest请求时，会在其响应中携带REBALANCE_IN_PROGRESS错误码进行标识。
+对于来自group follower的SyncGroupRequest，则直接抛弃，知道收到group leader的SyncGroupRequest一起响应
+AwaitingSync -> Stable：当GroupCoordinator收到group leader发来SyncGroupRequest时进行切换
+AwaitingSync -> PreparingRebalance：有三种情况可能导致此状态切换，一是有member加入或退出consumer group，二是有新的member请求加入consumer group，三是consumer group中的member心跳超时
+
+Stable：标识consumer group处于正常状态，也是consumer group的初始状态
+针对该状态的consumer group，GroupCoordinator可以处理所有的请求，例如：OffsetCommitRequest、HeartbeatRequest、OffsetFetchRequest、来自group follower的JoinGroupRequest、来自consumer group中现有member的SyncGroupRequest
+Stable -> PreparingRebalance：有四种情况会导致此状态切换，一是consumer group中现有member心跳检测超时，二是有member主动退出，三是当期那group leader发送JoinGroupRequest，四是有新的member请求加入consumer group
+
+Dead:consumer group中已经没有member存在
+处于此状态的consuemr group中没有member，其对应的GroupMetadata也将被删除。对于此状态的consumer group，除了OffsetCommitRequest，其他请求的响应中都会携带UNKNOWN_MEMBER_ID错误码进行标识。
+
+**rebalance的三个步骤**
+JoinGroupRequest -> SyncGroupRequest
+
+**JoinGroupRequest**
+由KafkaApis.handleJoinGroupRequest()函数处理。
+首先进行权限验证，之后将JoinGroupRequest委托给GroupCoordinator进行处理。
+
+**DelayedJoin**
+延迟操作，主要功能是等待consumer group中所有的消费者发送JoinGroupRequest申请加入。
+每当处理完新收到的JoinGroupRequest时，都会检测相关的DelayedJoin是否能过完成，经过一段时间等待，DelayedJoin也会到期执行
+
+**HeartbeatRequest分析**
+由KafkaApis.handleHeartbeatRequest()函数处理。
+他负责验证权限，定义回调函数，并将请求委托给GroupCoordinator进行处理。
+
+**SyncGroupRequest分析**
+由KafkaApis.handleSyncGroupRequest()函数处理。
+定义相关的回调函数，并将请求委托给GroupCoordinator进行处理。
+
+**OffsetCommitRequest分析**
+由KafkaApis.handleOffsetCommitRequest()函数处理。
+定义相关的回调函数，并将请求委托给GroupCoordinator进行处理。
+
+**LeaveGroupRequest分析**
+当消费者离开consumer group，例如调用unsubscribe()函数取消对topic的订阅时，会向GroupCoordinator发送LeaveGroupRequest。
+由KafkaApis.handleLeaveGroupRequest()函数处理。
+定义相关的回调函数，并将请求委托给GroupCoordinator进行处理。
+
+**onGroupLoaded和onGroupUnloaded**
+GroupCoordinator.onGroupLoaded()函数是在GroupCoordinator.handleGroupImmigration()函数中传入GroupMetadataManager.loadGroupsForPartition()函数的回调函数。当出现GroupMetadata重复加载时，会调用它更新心跳
+
+GroupCoordinator.onGroupUnloaded()函数是在GroupCoordinator.handleGroupEmigration()函数中传入GroupMetadataManager.removeGroupsForPartition()函数的回调函数。它会在GroupMetadata被删除前，将consumer group状态转换成Dead，并根据之前的consumer group状态进行相应的请清理操作
+
+##身份认证与权限控制##
+身份认证:客户端(生产者或消费者)通过某些凭证，如用户名/密码或是SSL证书，让服务端确认客户端的真实身份
+	身份认证在kafka中的具体体现是服务器是否允许当前请求的客户端建立连接。
+权限控制:服务端根据客户端的身份，决定对某些资源是否有某些操作权限。
+	权限控制体现在对消息的读写等方面的权限上。
+	
+####身份认证####
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

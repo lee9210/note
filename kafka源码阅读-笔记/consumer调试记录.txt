@@ -1,0 +1,249 @@
+
+代码
+````
+public class ConsumerTest {
+    public static void main(String[] args){
+        Consumer consumer = new Consumer("test");
+        consumer.start();
+    }
+}
+
+class Consumer extends Thread{
+    private static final Logger logger = LoggerFactory.getLogger(Consumer.class);
+    private String topic;
+    public Consumer(String topic){
+        this.topic = topic;
+    }
+
+    @Override
+    public void run() {
+        Properties props = new Properties();
+        props.put("bootstrap.servers", "localhost:9092");
+        props.put("group.id", "DemoConsumer");
+        props.put("enable.auto.commit", "true");
+        props.put("auto.commit.interval.ms", "1000");
+        props.put("session.timeout.ms", "30000");
+        props.put("key.deserializer", "org.apache.kafka.common.serialization.IntegerDeserializer");
+        props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        KafkaConsumer<Integer, String> consumer = new KafkaConsumer<>(props);
+        consumer.subscribe(Arrays.asList(topic));
+        try {
+            while (true) {
+                ConsumerRecords<Integer, String> records = consumer.poll(100);
+                for (ConsumerRecord<Integer, String> record : records) {
+                    System.out.println("get message : (" + record.key() + " , " + record.value() + ")");
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            consumer.close();
+        }
+    }
+}
+````
+
+初始化流程： KafkaConsumer.KafkaConsumer(ConsumerConfig config, Deserializer<K> keyDeserializer, Deserializer<V> valueDeserializer)构造函数
+1. 根据配置，创建clientId等信息
+2. 配置监控信息
+3. 初始化集群元数据(本地创建保存)Metadata
+4. 根据"bootstrap.servers"创建List<InetSocketAddress>，等待进行socket连接
+5. 更新Metadata
+6. 创建NetworkClient
+7. 创建ConsumerNetworkClient
+7. 初始化offset重设策略
+8. 记录每个topic的初始offset
+9. 生成分区分配策略分区分配
+10. 创建interceptor
+11. 创建ConsumerCoordinator
+12. 配置key.value 的解码器
+13. 初始化Fetcher
+
+初始化完成之后，就可以通过KafkaConsumer.poll()获取数据
+
+
+KafkaConsumer.poll()流程：
+1. 防止多线程并发操作:KafkaConsumer.acquire()
+	1. 检查本consumer有没有关闭
+	2. 记录当前线程id(如果当前线程id和正在使用consumer的id不一样，则直接抛出异常)
+	3. 增加重入次数
+2. 获取数据。KafkaConsumer.pollOnce()
+	1. 通过GroupCoordinator查找GroupCoordinator。如果没有找到，会一直阻塞在这里。coordinator.ensureCoordinatorReady();
+		1. 检查GroupCoordinator的状态：coordinatorUnknown()
+			检查coordinator是否为null，如果为null，则返回true，如果不为null，并且网络连接正常，则返回true
+		2. 创建并缓存请求:sendGroupCoordinatorRequest();
+			1. 查找负载最低的节点，底层实现是查找InFlightRequests中未确认请求最少的节点
+			2. 找不到可用的节点，则直接返回一个异常结束的RequestFuture
+			3. 找到节点：创建GroupCoordinatorRequest请求并将GroupCoordinatorRequest缓存到unsent集合
+		3. 阻塞发送GroupCoordinatorRequest，并处理GroupCoordinatorResponse:client.poll(future);
+		4. 异常处理:future.failed()
+		5. 连接到GroupCoordinator,退避一段时间，重试:coordinatorDead();
+	2. 如果有需要，完成rebalance操作：coordinator.ensurePartitionAssignment();
+		1. 检测订阅类型，USER_ASSIGNED不需要进行rebalance操作，而是由用户手动指定分区：subscriptions.partitionsAutoAssigned()；
+		2. 检测是否需要更新Metadata：client.ensureFreshMetadata();
+		3. 确保group能使用：ensureActiveGroup();
+			1. 检测是否需要发送JoinGroupRequest请求:needRejoin()
+			2. 发送JoinGroupRequest请求前的准备操作:onJoinPrepare(generation, memberId);
+				1. 进行一次同步提交offset操作:maybeAutoCommitOffsetsSync();
+				2. 调用SubscriptionState中设置的ConsumerRebalanceListener:subscriptions.listener();
+				3. 将needsPartitionAssignment设置为true:subscriptions.needReassignment();
+			3. 检测GroupCoordinator状态:ensureCoordinatorReady();同上面ensureCoordinatorReady()流程
+			4. 等待发往GroupCoordinator所在节点的消息全部完成:client.awaitPendingRequests(this.coordinator);
+				等待unsent和InFlightRequests中的请求全部完成(正常收到响应或出现异常)
+			5. 创建并缓存请求Join Group:sendJoinGroupRequest();
+				1. 检测GroupCoordinator：coordinatorUnknown()
+				2. 创建JoinGroupRequest
+				3. 将JoinGroupRequest放入unsent集合等待发送
+			6. 添加监听器:future.addListener
+				主要是添加回调，处理response
+			7. 阻塞等待JoinGroupRequest请求完成:client.poll(future);
+				需要等待有response之后，才能进行相应的处理
+			8. 异常处理:future.failed()
+				抛出异常，还是等待段时间再试
+	3. 回复SubscriptionState中对应的TopicPartitionState状态。主要是committed字段和position字段：updateFetchPositions(this.subscriptions.missingFetchPositions());
+	4. 执行定时任务，HeartbeatTask和AutoCommitTask：client.executeDelayedTasks(now);
+	5. 尝试从completedFetches缓存中解析消息:fetcher.fetchedRecords();
+	6. 判断缓存中是否有消息:records.isEmpty()，如果不为空，则表示有消息，直接返回，否则执行下面的步骤。
+	7. 创建并缓存FetchRequest请求:fetcher.sendFetches();
+	8. 发送FetchRequest:client.poll(timeout, now);
+	9. 从completedFetches缓存中解析消息:fetcher.fetchedRecords();
+
+
+
+consumer向broker发送消息的完整流程(从启动到消费)：https://www.jianshu.com/p/ae44ae83e41d
+第一步：Consumer发送GroupCoordinator请求获取GroupCoordinator所在节点。
+第二步：Consumer发送JoinGroup请求加入GroupCoordinator。
+第三步：Consumer发送SyncGroup请求获取分区分配。
+第四步：Consumer发送OffsetFetch请求获取分区消费位置。
+第五步：Consumer发送OffsetsRequest请求获取分区消费位置。
+第六步：Consumer发送Fetch请求获取数据。
+第七步：Consumer发送OffsetCommit请求到GroupCoordinator保存消费offset。
+第八步：Consumer发送Heartbeat请求到GroupCoordinator。
+
+----
+
+FetchRequest:拉取消息的request
+
+发送FetchRequest流程：
+
+条件：
+1. 第一次pollOnce()的时候，fetcher中没有数据，需要发送一次FetchRequest请求到server，获取数据
+2. fetcher中的消息消费完成之后，发送FetchRequest到server，请求获取数据
+
+流程：Fetcher.sendFetches()函数
+1. 首先调用Fetch.createFetchRequests()函数，创建每个node对应的FetchRequest(此处的node主要是各个topic的leader)
+	1. 按照条件过滤node
+	2. 查找分区的leader副本所在的node，找不到leader副本则准备更新Metadata
+	3. 如果其在unsent集合或InFlightRequest中的对请求队列不为空，则不对此node节点发送FetchRequest请求
+	4. 记录每个分区对应的offset(等下创建FetchRequest的时候需要使用)
+	5. 对过滤出来的可以发送的node，以及上面的过滤出来的数据进行组装，封装成FetchRequest对象
+2. 循环取出上面的entry，将发往每个node的FetchRequest缓存到unsent队列上，并添加回调函数。
+
+上面的步骤只是把FetchRequest放入unsent中，真正执行发送的是ConsumerNetworkClient.poll()函数
+
+
+
+发生 rebalance 的时机
+组成员个数发生变化。例如有新的 consumer 实例加入该消费组或者离开组。
+订阅的 Topic 个数发生变化。
+订阅 Topic 的分区数发生变化。
+消费者进程挂掉的情况
+session 过期
+heartbeat 过期
+
+----
+
+GroupCoordinatorRequest:获取服务器信息的请求
+
+条件：
+1. 没有和server创建连接，或者连接已经断开的情况下
+
+流程：AbstractCoordinator.sendGroupCoordinatorRequest()函数
+1. 查找最低负载的node节点
+2. 将根据groupId构建GroupCoordinatorRequest
+3. 放入client的unsent队列中等待发送，并添加回调函数。
+
+此处需要阻塞等待服务端发送response给consumer，因为数据不一致，获取的数据就不一致。
+
+
+
+HeartbeatRequest:心跳任务request
+HeartbeatTask的定时任务中，负责定时发送HeartbeatRequest并处理其响应
+心跳任务在执行完成之后，会重新把本任务存到delayTaskQueue中，如果response为成功，则更新下次时间，如果失败，不更新时间
+
+条件：
+
+1. 执行发送定时任务的地方是获取Fetch消息时候，会调用一次发送定时任务的逻辑：
+delayedTasks.poll(now);
+client.executeDelayedTasks(now);
+上面两行代码都是执行定时任务的唤醒代码
+
+2. JoinGroupRequest得到成功回应之后，会重新启动心跳任务
+
+发送HeartbeatRequest流程：AbstractCoordinator.sendHeartbeatRequest()
+1. 根据groupId、generation、memberId构建HeartbeatRequest
+2. 把HeartbeatRequest放入client的unsent队列中等待发送，并添加回调处理函数HeartbeatCompletionHandler
+
+----
+
+JoinGroupRequest:当前消费者加入consumer group
+
+条件：
+1. 解析SyncGroupResponse，当SyncGroupResponse中包含错误信息的时候，代表本consumer需要重新join group
+2. 解析HeartbeatResponse，当HeartbeatResponse中表示当前group正在进行rebalance的时候，表示本consumer需要重新join group
+3. 解析HeartbeatResponse，当HeartbeatResponse中表示group id无效时，需要重新join group
+4. 解析HeartbeatResponse，当HeartbeatResponse中表示member id无效时，需要重新join group(member id:服务端GroupCoordinator返回的分配给消费者的唯一id)
+
+
+
+发送JoinGroupRequest流程：AbstractCoordinator.sendJoinGroupRequest()
+1. 把JoinGroupRequest放入client的unsent队列中等待发送，并添加回调处理函数.
+
+----
+
+OffsetFetchRequest:获取上次提交offset位置
+
+发送OffsetFetchRequest流程：
+
+条件：
+1. 拉取消息的时候，当检查到有TopicPartition的TopicPartitionState为空的时候，则需要发送
+2. 
+
+流程：ConsumerCoordinator.sendOffsetFetchRequest()
+1. 根据groupId和partitions创建OffsetFetchRequest，放入client的unsent队列中等待发送，并添加回调函数。
+
+----
+
+SyncGroupRequest:
+
+条件：
+分区分配结果完成之后，当收到服务端的JoinGroupResponse时候，内部不包含错误的话
+主要是从SyncGroupResponse中获取分区分配结果
+
+流程：
+onJoinLeader(joinResponse).chain(future);
+onJoinFollower().chain(future);
+上面两行代码都是执行发送SyncGroupRequest代码；
+
+----
+
+OffsetCommitRequest:提交offset的request
+
+条件：
+1. 自动提交offset的task
+2. 手动调用提交offset的调用函数
+
+流程：ConsumerCoordinator.sendOffsetCommitRequest()
+
+
+
+
+
+
+
+
+
+
+
+
+

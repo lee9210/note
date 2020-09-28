@@ -1,0 +1,29 @@
+kafka Broker、Topic、Partition、Leader/Follower、Consumer Group概念
+broker:一台kafka服务器就是一个broker。一个集群由多个broker组成。一个broker可以容纳多个topic
+Consumer Group:消费者组，由多个consumer组成，消费者组内每个消费者负责消费不同分区的数据，一个分区只能由一个组内消费者消费；
+	消费者组之间互不影响。所有的消费者都属于某个消费者组，即消费者组是逻辑上的一个订阅者。
+partition:为了实现扩展性，一个非常大的topic可以分布到多个broker上，一个topic可以分为多个partition，每个partition是一个有序的队列；
+replica:副本，为保证集群中的某个节点发生故障时，该节点上的partition数据不丢失，qiekafka仍然能够继续工作，kafka提供了副本机制，
+	一个topic的每个分区都有若干个副本，一个leader和若干个follower
+leader:每个分区多个副本的"主"，生产者发送数据的对象，以及消费者消费数据的对象，都是leader
+follower:每个分区多个副本的"从"，实时从leader中同步数据，保持和leader数据的同步。leader发生故障时，某个follower会成为新的leader
+
+系统图：
+![](./picture/kafka-frame.png)
+
+分区选择策略
+如果消息没有key会根据counter与Partition个数取模来确定分区编号，counter不断递增，确保消息不会都发到同一个Partition里;
+如果有key的话，则对key进行hash，然后与分区数量取模，来确定key所在的分区达到负载均衡
+
+
+生产者发送数据量大小的影响
+maxRequestSize：消息的最大长度，这个长度包含了消息头，序列化后的key和序列化后的value的长度
+totalMemorySize：发送单个消息的缓冲区大小
+
+首先对maxRequestSize长度进行判断，如果大于，抛出异常
+然后对totalMemorySize进行判断，如果大于，抛出异常
+
+java.nio.channels.Selector.wakeup()函数的作用：唤醒阻塞在selector.select上的线程，让该线程及时去处理其他事情，例如注册channel，改变interestOps、判断超时等等。
+
+
+TheInput:GetWorldEntityUnderMouse():Remove()

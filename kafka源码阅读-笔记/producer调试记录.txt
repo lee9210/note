@@ -1,0 +1,174 @@
+####Producer####
+代码
+````
+package kafka.examples.test;
+
+import org.apache.kafka.clients.producer.Callback;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+
+import java.util.Properties;
+import java.util.concurrent.ExecutionException;
+
+public class ProducerTest {
+    public static void main(String[] args){
+        Producer producer = new Producer("test", true);
+        producer.start();
+    }
+
+}
+
+class DemoCallBack implements Callback {
+    /** 开始发送消息的时间戳 */
+    private final long startTime;
+    /** 消息的key */
+    private final int key;
+    /** 消息的value */
+    private final String message;
+
+    public DemoCallBack(long startTime, int key, String message) {
+        this.startTime = startTime;
+        this.key = key;
+        this.message = message;
+    }
+
+    /**
+     * 生产者成功发送消息，收到kafka服务端发来的ACK确认消息后，会调用此回调函数
+     * @param metadata  The metadata for the record that was sent (i.e. the partition and offset). Null if an error occurred.
+     *                 生产者发送的消息的元数据，如果发送过程中出现异常，此参数为null
+     * @param exception The exception thrown during processing of this record. Null if no error occurred.
+     *                  发送过程中出现的异常，如果发送成功，则此参数为null
+     */
+    @Override
+    public void onCompletion(RecordMetadata metadata, Exception exception) {
+        long elapsedTime = System.currentTimeMillis() - startTime;
+        if (metadata != null) {
+            // RecordMetadata中包含了分区信息，offset消息等
+            System.out.println("message(" + key + ", " + message + ") sent to partition(" + metadata.partition() + "), offset(" + metadata.offset() + ") in " + elapsedTime + " ms");
+        } else {
+            exception.printStackTrace();
+        }
+    }
+}
+
+
+class Producer extends Thread {
+    private boolean isAsync;
+    private String topic;
+
+    public Producer(String topic, boolean isAsync){
+        this.topic = topic;
+        this.isAsync = isAsync;
+    }
+
+    @Override
+    public void run() {
+        // 消息的发送方式：异步还是同步
+        Properties props = new Properties();
+        // kafka服务端的主机名和端口号
+        props.put("bootstrap.servers", "localhost:9092");
+        props.put("client.id", "DemoProducer");
+        // 消息的key和value都是字节数组，为了将java对象转换为字节数组，可以配置"key.serializer"和"value.serializer"两个序列化器，完成转化
+        props.put("key.serializer", "org.apache.kafka.common.serialization.IntegerSerializer");
+        // StringSerializer用来将String对象序列化成字节数组
+        props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+        // 生产者的核心类
+        KafkaProducer producer = new KafkaProducer(props);
+        // 消息的key
+        int messageNo = 1;
+        while (true) {
+            // 消息的value
+            String messageStr = "Message_" + messageNo;
+            long startTime = System.currentTimeMillis();
+            // 异步发送消息
+            if (isAsync) {
+                // 第一个参数是ProducerRecord类型的对象，封装了topic、消息的key、消息的value
+                // 第二个参数是一个CallBack对象，当生产者接收到kafka发来的ACK确认消息的时候，会调用此CallBack对象的onCompletion()方法，实现回调功能
+                producer.send(new ProducerRecord(topic, messageNo, messageStr), new DemoCallBack(startTime, messageNo, messageStr));
+            } else {
+                try {
+                    producer.send(new ProducerRecord("test", messageNo, messageStr)).get();
+                    Thread.sleep(500);
+                } catch (InterruptedException | ExecutionException e) {
+                    e.printStackTrace();
+                }
+            }
+            System.out.println("send message : (" + messageNo + " , " + messageStr + ")");
+            ++ messageNo;
+        }
+    }
+}
+
+````
+
+producer
+
+KafkaProducer对象的创建
+
+1. 首先是环境的配置，调用的类是ProducerConfig，生成ProducerConfig这个对象，此对象里面包含了本机的环境等数据，具体介绍看![]( https://segmentfault.com/a/1190000015312971)
+2. 然后调用private KafkaProducer(ProducerConfig config, Serializer<K> keySerializer, Serializer<V> valueSerializer)这个函数来生成KafkaProducer
+	此函数的作用主要是根据自定义和默认的config生成监控信息、分区工具，kafka集群元数据，生成RecordAccumulator类、创建NetworkClient、创建sender对象，
+
+producer没有心跳task
+
+KafkaProducer.send()函数过程
+
+异步过程：
+1. 首先生成ProducerRecord对象，此对象中包含了该次发送的所有信息，包含topic.partition.key,value以及时间戳
+2. 内部调用KafkaProducer.send(ProducerRecord<K, V> , Callback)函数,根据KafkaProducer内的interceptors是否为null，来决定是否需要调用ProducerInterceptors.onSend(ProducerRecord<K, V>)来对ProducerRecord对象进行过滤
+3. 调用KafkaProducer.doSend(ProducerRecord<K, V> , Callback)函数，异步发送到topic。
+	1. 首先确认给定主题分区的集群元数据可用。调用KafkaProducer.waitOnMetadata(String, long)函数获取等待时间
+	2. 序列化key.value
+	3. 确认长度
+	4. 构建回调函数
+	5. 追加消息到accumulator中
+	6. 唤醒sender线程
+	7. 返回
+	
+sender线程：主要作用是发送数据，还会处理一些发送失败的消息，处理回调等
+1. 获取集群中符合发送消息条件的节点集合
+2. 根据可以发送的节点，从RecordAccumulator中取出List<RecordBatch>,
+3. 往正在发送的节点集合中添加数据，防止其他线程同步操作。
+4. 更新监控数据
+5. 根据List<RecordBatch>创建List<ClientRequest>
+6. 循环List<ClientRequest>进行发送（此步骤会把List<ClientRequest>放入InFlightRequests队列中）。此处只是设置到对应的channel的send字段中，并没有真正执行发送。
+7. 调用client.poll()，执行网络I/O
+
+
+发送的过程是一个生产者和消费者模式
+生产者主要是往accumulator里面追加数据，数据格式是topic-partition为key，value是一个Deque<RecordBatch>队列
+消费者是sender线程，不断检查accumulator中的是否有需要发送的数据。如果有的话，就构造成request，然后进行发送。
+每条消息有对应的callback
+
+
+回调函数保存在RecordBatch中的List<Trunk> thunks中，每个RecordBatch都会作为一个完整的数据包进行发送，成功会一起成功，失败也是，所以无所谓成功还是失败，如果有自定义的回调函数，
+都会调用自定义的回调函数，结果都是一样的。所以不用匹配每条消息的对应回调函数。
+
+InFlightRequests：主要作用是缓存已经发出去但是没有收到响应的ClientRequest
+这个对象保存了每个节点的缓存的未响应的数据，如果数据过大，则不能往这个节点里面再继续发送数据。
+InFlightRequests.canSendMore()函数在clint.send()函数调用的时候，用来判断是否可以向该节点发送数据。
+
+producer内有两个Map<key，Deque>，一个Map<key，Deque>是RecordAccumulator消息保存器中的list，主要用来保存消息生产者线程产生的消息，以及对应的callback等信息。
+此处的callback主要是用户自定义的callback，用于用于用户自定义回调等作用
+
+一个Map<key，Deque>是InFlightRequests中的，主要作用是保存未成功响应的node的request，以及此request对应的callback等信息。
+此处的callback为RequestCompletionHandler类型的对象。主要作用是对服务端的响应做处理
+此处的处理主要是：
+1. 异常处理（重试或者直接移除）
+2. 成功处理（调用回调并直接移除）
+
+生产者产生消息线程和sender两个线程同时操作RecordAccumulator
+
+对RecordAccumulator的清理是在sender线程生成数据时候产生的，此过程会从RecordAccumulator.batchs中的RecordBatch一个个的poll出来，组装需要发送的List<RecordBatch>
+
+RecordBatch数据的流转路程是
+1. 首先在producer中生成，然后追加到RecordAccumulator
+2. sender线程在条件成立的条件下，从RecordAccumulator中取出并且删除数据，
+3. 如果发送失败，则执行重发逻辑(如果设置重发，则重新加到RecordAccumulator中执行重发)
+
+InFlightRequests中的数据流转，由于用的是socket长连接，所以不会出现发送数据前一个成功，后一个失败的情况。
+1. sender线程在执行发送的时候，会把数据放到inFlightRequests中，作为等待响应的数据。
+2. 由于放入的时候是放在队首，所以处理响应的时候是处理的队尾的响应。
+3. 对于服务端的相应，只有需要处理的才会处理(一般是需要更新Metadata等需要修改元数据的才会处理，否则的话就直接结束)
+
