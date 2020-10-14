@@ -1,0 +1,13 @@
+ReplicaStateMachine副本状态机:
+
+主要负责管理副本状态的转换
+
+![](./picture/副本状态转换.jpg)
+
+NewReplica：副本被创建之后所处的状态。
+OnlineReplica：副本正常提供服务时所处的状态。
+OfflineReplica：副本服务下线时所处的状态。
+ReplicaDeletionStarted：副本被删除时所处的状态。
+ReplicaDeletionSuccessful：副本被成功删除后所处的状态。
+ReplicaDeletionIneligible：开启副本删除，但副本暂时无法被删除时所处的状态。
+NonExistentReplica：副本从副本状态机被移除前所处的状态。

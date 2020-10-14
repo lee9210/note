@@ -1,0 +1,145 @@
+文件分类
+.index:索引文件
+.log:消息文件
+.swap:将文件交换到日志时使用的临时文件
+.cleaned:用于日志清理的临时文件
+.delete:计划要删除的文件
+.kafka_cleanshutdown:代表上次优雅关机
+
+
+加载日志：
+Log的初始化过程中会调用Log.loadSegments()函数。
+1. 删除".delete"和".cleaned"文件。
+2. 加载全部的日志文件和索引文件。如果索引文件没有配对的日志文件，则删除索引文件；如果日志文件没有对应的索引文件，则重建索引文件
+3. 处理步骤1中记录的".swap"文件，原理与日志压缩最后的步骤类似
+4. 对于非空的Log，需要创建activeSegment，保证Log中至少有一个LogSegment。而对于非空Log,则需要进行恢复操作
+
+LogManager初始化过程：
+1. 为每个log目录分配一个有ioThreads条线程的线程池，用来执行恢复操作
+2. 检测Broker上次关闭是否正常，并设置Broker的状态。在Broker正常关闭时，会创建一个".kafka_cleansshutdown"的文件，通过此文件进行判断
+3. 载入每个Log的recoveryPoint
+4. 为每个Log创建一个恢复任务，交给线程池处理
+5. 主线程等待所有的恢复任务完成
+6. 关闭所有在步骤1中创建的线程池
+
+在此broker上的每个topic的partition都有个一个activeSegment，在broker启动的时候，需要对activeSegment进行恢复。
+如果是正常关闭的
+如果不是正常关闭的，则需要执行日志加载操作。
+
+
+消息追加过程：
+
+1. 生产者发送ProducerRequest向某些指定分区追加消息
+2. ProducerRequest经过网络层和API层的处理到达ReplicaManager，它会将消息交给日志存储子系统进行处理，最终追加到对应的Log中。同时还会检测delayedFetchPurgatory中相关key对应的DelayedFetch，满足条件则将其执行完成
+3. 日志存储子系统返回追加消息的结果
+4. ReplicaManager为ProducerRequest生成DelayedProduce对象，并交由delayedProducePurgatory管理
+5. delayedProducePurgatory使用SystemTimer管理DelayedProduce是否超时
+6. ISR集合中的Follower副本发送FetchRequest请求与Leader副本同步消息。同时，也会检查DelayedProduce是否符合执行条件
+7. DelayedProduce执行时会调用回调函数产生ProducerResponse，并将其添加到RequestChannels中
+8. 由网络层将ProducerResponse返回给客户端。
+
+具体的完成消息写入：Partition.appendMessagesToLeader()函数:
+1. 获取leader副本对应的Replica
+2. 获取Log
+3. 验证当前ISR集合中的数量，和最少需要同步的ISR数量是否符合要求，如果不符合，则抛出异常
+4. 
+
+最终完成消息写入的是log.append()函数
+1. 首先调用Log.analyzeAndValidateMessageSet()函数，对ByteBufferMessageSet中的Message数据进行验证，并返回LogAppendInfo对象。
+ 在LogAppendInfo中封装了ByteBufferMessageSet中第一个消息的offset、最后一个消息的offset、生产者采用的压缩方式、追加到Log的时间戳、服务端用的压缩方式、外层消息的个数、通过验证的总字节数等信息
+2. 调用Log.trimInvalidBytes()方法，请求未验证通过的Message
+3. 调用ByteBufferMessageSet.validateMessagesAndAssignOffsets()函数，进行内部压缩消息做进一步验证、消息格式转换、调整magic值、修改时间戳等操作，并为Message分配offset。
+4. 如果在validataMessagesAndAssignOffsets()函数中修改了ByteBufferMessageSet的长度，则重新验证Message的长度是否合法
+5. 调用Log.maybeRoll()函数获取activeSegment,此过程可能分配新的activeSegment
+6. 将ByteBufferMessageSet中的消息追加到activeSegment中，通过调用LogSegment.append()函数实现
+7. 更新当前副本的LogEndOffset，即Log.nextOffsetMetadata字段
+8. 执行flush()操作，将LogEndOffset之前的全部Message刷新到磁盘
+
+消息写入流程：
+1. 首先对生产者权限进行验证，然后生成回调函数，并委托ReplicaManager.appendMessages()完成消息写入：KafkaApis.handleProducerRequest()函数
+2. ReplicaManager.appendMessages()会首先调用ReplicaManager.appendToLocalLog()函数完成消消息写入。在此过程中，如果是需要全部副本完成同步的话，会创建一个DelayedProduce对象，只有当全部副本完成写入的时候，才会返回消息发送成功
+3. ReplicaManager.appendToLocalLog()函数
+	1. 对消息进行迭代，每个消息分次写入
+	2. 从allPartitions集合中获取对应的Partition对象
+	3. 调用Partition.appendMessagesToLeader()函数将消息写入对应的log中
+4. Partition.appendMessagesToLeader()函数
+	1. 获取leader副本对应的Replica
+	2. 调用Log.append()函数完成最终消息的写入
+5. Log.append()函数
+	1. 首先包装成LogAppendInfo对象
+	2. 去掉LogAppendInfo内没有通过验证的数据
+	3. 分配offset(如果是压缩消息，则需要解压缩之后继续分配。因为只可能压缩一次，所以只需要检查一次就可以了。然后更新外部的offset为内部消息的最后一条offset)
+	4. 获取activeSegment,在此segment中追加消息
+	5. 更新LEO(如果检测到LEO和recoveryPoint的差值超过一个值，则调用保存到磁盘的动作)
+	
+replica副本同步机制：https://www.cnblogs.com/zhy-heaven/p/10994122.html
+
+副本同步过程:
+线程创建：在ReplicaManager.makeFollower()函数中，会创建一个ReplicaFetcherThread线程，此线程不断循环doWork()，不断从leader获取需要同步的数据。
+同步起始数据：ReplicaManager.makeFollower()函数中，会将分区信息以及同步起始位置传递给Fetcher线程，然后由fetcher线程进行同步
+
+doWork()函数流程：
+1. 根据partitionMap创建对应的FetchRequest
+2. AbstractFetcherThread.processFetchRequest()处理上面创建的FetchRequest
+	1. 调用ReplicaFetcherThread.fetch()函数，发送FetchRequest，并获得FetchResponse。
+		1. 调用ReplicaFetcherThread.sendRequest()函数发送，并获取response。此处会调用NetworkClientBlockingOps.blockingSendAndReceive()函数，阻塞等待
+		2. 根据response，构建FetchResponse返回
+	2. 如果FetchResponse不为空，则遍历response
+	3. 获取最后一条消息的offset。
+	4. 更新partitionMap中的offset信息
+	5. 更新fetcherLagStats中的HW
+	6. 调用ReplicaFetcherThread.processPartitionData()函数将返回的消息追加到follower副本的log中，并更新follower副本的HW
+	7. 若follower副本请求的offset超出了leader的LEO，则生产新的offset
+
+副本角色切换：
+controller leader在监控到partition leader不可用之后，会从isr集合中获取第一个切换成leader节点。
+成为leader的线程会先关闭fetcher线程，然后修改自己成为partition的leader
+成为follower的线程会先关闭fetcher线程，然后重新创建fetcher线程，从leader所在的线程同步消息。
+
+
+关闭副本：
+leader所在broker正常关闭的时候、副本重分配的时候，都有可能产生关闭副本的动作。
+
+
+controller 角色切换：
+kafka broker在启动的时候，都会创建一个controller，但是只有第一个注册成功的controller才会成为controller leader，后面注册的都是follower。
+当leader发生故障的时候，会进行角色的切换。
+
+
+1. controller在zookeeper注册watcher，一旦有broker宕机，在zookeeper对应的znode会自动删除，zookeeper则会通知watcher，controller读取最新的幸存的Broker
+2. Controller决定set_p，该集合包含了宕机的所有Broker上的所有Partition
+3. 对set_p中的每一个Partition
+	1. 从/brokers/topics/[topic]/partitions/[partition]/state读取该Partition当前的ISR
+	2. 决定该Partition的新Leader。如果当前ISR中有至少一个Replica还幸存，则选择其中一个作为新Leader，新的ISR则包含当前ISR中所有幸存的Replica。否则选择该Partition中任意一个幸存的Replica作为新的Leader以及ISR（该场景下可能会有潜在的数据丢失）。如果该Partition的所有Replica都宕机了，则将新的Leader设置为-1。
+	3. 将新的Leader，ISR和新的leader_epoch及controller_epoch写入/brokers/topics/[topic]/partitions/[partition]/state
+	4. 直接通过RPC向set_p相关的Broker发送LeaderAndISRRequest命令。Controller可以在一个RPC操作中发送多个命令从而提高效率。
+
+LeaderAndIsrRequest响应过程：
+1. 若请求中controllerEpoch小于当前最新的controllerEpoch，则直接返回ErrorMapping.StaleControllerEpochCode。
+2. 对于请求中partitionStateInfos中的每一个元素，即（(topic, partitionId), partitionStateInfo)：
+	1. 若partitionStateInfo中的leader epoch大于当前ReplicManager中存储的(topic, partitionId)对应的partition的leader epoch，则：
+		1. 若当前brokerid（或者说replica id）在partitionStateInfo中，则将该partition及partitionStateInfo存入一个名为partitionState的HashMap中
+		2. 否则说明该Broker不在该Partition分配的Replica list中，将该信息记录于log中
+	2. 否则将相应的Error code（ErrorMapping.StaleLeaderEpochCode）存入Response中
+3. 筛选出partitionState中Leader与当前Broker ID相等的所有记录存入partitionsTobeLeader中，其它记录存入partitionsToBeFollower中。
+4. 若partitionsTobeLeader不为空，则对其执行makeLeaders方。
+5. 若partitionsToBeFollower不为空，则对其执行makeFollowers方法
+6. 若highwatermak线程还未启动，则将其启动，并将hwThreadInitialized设为true。
+7. 关闭所有Idle状态的Fetcher。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

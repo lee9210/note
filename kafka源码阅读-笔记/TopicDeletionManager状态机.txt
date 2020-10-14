@@ -1,0 +1,40 @@
+TopicDeletionManager状态机：
+主要负责删除主题以及删除主题后的一系列操作
+
+不能删除主题的情况
+1. 如果topic中的任一分区正在重新分配副本，则此topic不能被删除
+2. 如果topic中的任一分区正在进行"优先副本"选举，则此topic不能被删除
+3. 如果topic中的任一分区的任一副本所在的broker宕机，则此topic不能删除
+
+
+
+
+
+删除topic操作的线程，步骤：
+1. 获取待删除topic的分区集合，构成UpdateMetadataRequest发送给所有的broker，将broker中MetadataCache的相关信息删除，这些分区不再对外提供服务
+2. 调用onTopicDeletion()函数开始对指定分区进行删除
+ a. 将不可用副本转换成ReplicaDeletionIneligible状态
+ b. 将可用副本转换成OfflineReplica状态，此步骤会发送StopReplicaRequest到待删除的副本(不会删除副本)，
+   同时还会向可用的broker发送LeaderAndIsrRequest和UpdateMetadataRequest，将副本从ISR集合中删除
+ c. 将可用副本由OfflineReplica转换成ReplicaDeletionStarted,此步骤会想可用副本发送StopReplicaRequest（删除副本），并设置回调函数处理StopReplicaResponse
+3. 调用deleteTopicsStopReplicaCallback()处理StopReplicaResponse
+ a. 如果StopReplicaResponse中的错误码表示出现异常，则将副本状态转换为ReplicaDeletionIneligible，并标记此副本所在topic不可删除，即将topic添加到topicsIneligibleForDeletion队列，最后幻想DeleteTopicsThread线程
+ b. 如果StopReplicaResponse正常，则将副本状态转换为ReplicaDeletionSuccessful，并唤醒DeleteTopicsThread线程
+4. 经过上述三个步骤后，开始第二次doWork()调用。如果待删除的Topic的所有副本已经处于ReplicaDeletionSuccessful状态，调用completeDeleteTopic()函数完成topic的删除
+ a. 取消partitionModificationsListeners监听
+ b. 将此topic的所有副本从ReplicaDeletionSuccessful转换为NonExistentReplica。此步骤会将副本对应的Replica对象从ControllerContext中删除
+ c. 将topic的所有分区换换为OfflineReplica状态，紧接着会再转换为NonExistentReplica
+ d. 将topic和相关的分区从topicsToBeDeleted集合和partitionsToBeDeleted集合中删除
+ e. 删除zookeeper以及ControllerContext中与此topic相关的全部信息
+5. 如果还有副本处于ReplicaDeletionStarted状态，则表示还没有收到StopReplicaResponse，则继续等待
+6. 如果topic的任一副本处于ReplicaDeletionIneligible状态，则表示此topic不能被删除，调用markTopicForDeletionRetry()将处于ReplicaDeletionIneligible状态的副本重新转换成OfflineReplica状态。按2->b中的流程
+
+
+
+
+
+
+
+
+
+

@@ -26,4 +26,77 @@ totalMemorySize：发送单个消息的缓冲区大小
 java.nio.channels.Selector.wakeup()函数的作用：唤醒阻塞在selector.select上的线程，让该线程及时去处理其他事情，例如注册channel，改变interestOps、判断超时等等。
 
 
+kafka中的ISR、AR又代表什么？ISR伸缩又是什么？:https://blog.csdn.net/weixin_43975220/article/details/93190906
+分区中的所有副本统称为AR（Assigned Repllicas）。
+所有与leader副本保持一定程度同步的副本（包括Leader）组成ISR（In-Sync Replicas），ISR集合是AR集合中的一个子集
+与leader副本同步滞后过多的副本（不包括leader）副本，组成OSR(Out-Sync Relipcas),
+AR=ISR+OSR
+Leader副本负责维护和跟踪ISR集合中所有的follower副本的滞后状态，当follower副本落后太多或者失效时，leader副本会吧它从ISR集合中剔除。
+如果OSR集合中follower副本“追上”了Leader副本，之后再ISR集合中的副本才有资格被选举为leader，而在OSR集合中的副本则没有机会（这个原则可以通过修改对应的参数配置来改变）
+
+
+HW是High Watermak的缩写， 俗称高水位，它表示了一个特定消息的偏移量（offset），消费之只能拉取到这个offset之前的消息。
+
+LEO是Log End Offset的缩写，它表示了当前日志文件中下一条待写入消息的offset
+
+kafka acks参数
+0:代表不管有没有写入磁盘，只要认为发送出去了，就认为这个消息发送成功
+1:代表只要Partition leader接收到消息，并写入本地磁盘成功了，就认为成功了，不管其他的follower有没有同步这条消息。
+-1:代表全部ISR都完成了复制。
+
+
+![](./picture/Log start offset和hw和LEO的区别.jpg)
+
+LEO更新的时机有四个：
+1. Log对象初始化时：当Log对象初始化时，我们必须要创建一个LEO对象，并对其进行初始化。
+2. 写入新消息时：当不断向Log对象插入新消息时，LEO值就像一个指针一样，需要不停地向右移动，也就是不断地增加。
+3. Log对象发生日志切分（Log Roll）时：日志切分是啥呢？其实就是创建一个全新的日志段对象，并且关闭当前写入的日志段对象。这通常发生在当前日志段对象已满的时候。一旦发生日志切分，说明Log对象切换了Active Segment，那么，LEO中的起始位移值和段大小数据都要被更新，因此，在进行这一步操作时，我们必须要更新LEO对象。
+4. 日志截断（Log Truncation）时：这个也是显而易见的。日志中的部分消息被删除了，自然可能导致LEO值发生变化，从而要更新LEO对象。
+
+更新Log Start Offset的时机：
+1. Log对象初始化时：和LEO类似，Log对象初始化时要给Log Start Offset赋值，一般是将第一个日志段的起始位移值赋值给它。
+2. 日志截断时：同理，一旦日志中的部分消息被删除，可能会导致Log Start Offset发生变化，因此有必要更新该值。
+3. Follower副本同步时：一旦Leader副本的Log对象的Log Start Offset值发生变化。为了维持和Leader副本的一致性，Follower副本也需要尝试去更新该值。
+4. 删除日志段时：这个和日志截断是类似的。凡是涉及消息删除的操作都有可能导致Log Start Offset值的变化。
+5. 删除消息时：在Kafka中，删除消息就是通过抬高Log Start Offset值来实现的，因此，删除消息时必须要更新该值。
+
+
+
+Controller与Broker交互的请求类型有3种：LeaderAndIsr、StopReplica和UpdateMetadata。
+这3类请求属于控制类请求，通常应该被赋予高优先级。
+
+其他的Produce和Fetch请求，属于数据类请求
+
+kafka server每个processor线程都会有一个BlockingQueue,用来保存返回给客户端数据。每次处理request产生的response都会往对应的processor线程的BlockingQueue中存。
+然后Processor的run函数中会不断的从这个queue中取。然后写往对应的channel中。
+即每个processor线程都会维护一个queue
+
+触发controller选举的场景
+1. 集群从零启动时；
+2. Broker侦测/controller节点消失时；
+3. Broker侦测到/controller节点数据发生变更时。
+
+状态机分类
+TopicDeletionManager：负责对指定Kafka主题执行删除操作，清除待删除主题在集群上的各类“痕迹”。
+ReplicaStateMachine：负责定义Kafka副本状态、合法的状态转换，以及管理状态之间的转换。
+PartitionStateMachine：负责定义Kafka分区状态、合法的状态转换，以及管理状态之间的转换。
+
+每个Broker启动时，都会创建对应的分区状态机和副本状态机实例，但只有Controller所在的Broker才会启动它们
+
+时间轮加入任务
+![](./picture/时间轮-加入任务.jpg)
+
+第1步:是获取定时任务的过期时间戳。所谓过期时间戳，就是这个定时任务过期时的时点。
+第2步:是看定时任务是否已被取消。如果已经被取消，则无需加入到时间轮中。如果没有被取消，就接着看这个定时任务是否已经过期。如果过期了，自然也不用加入到时间轮中。如果没有过期，就看这个定时任务的过期时间是否能够被涵盖在本层时间轮的时间范围内。如果可以，则进入到下一步。
+第3步:首先计算目标Bucket序号，也就是这个定时任务需要被保存在哪个TimerTaskList中。我举个实际的例子，来说明一下如何计算目标Bucket。
+	第1层的时间轮有20个Bucket，每个滴答时长是1毫秒。那么，第2层时间轮的滴答时长应该就是20毫秒，总时长是400毫秒。第2层第1个Bucket的时间范围应该是[20，40)，第2个Bucket的时间范围是[40，60），依次类推。假设现在有个延时请求的超时时间戳是237，那么，它就应该被插入到第11个Bucket中。
+	在确定了目标Bucket序号之后，代码会将该定时任务添加到这个Bucket下，同时更新这个Bucket的过期时间戳。
+第4步:如果这个Bucket是首次插入定时任务，那么，还同时要将这个Bucket加入到DelayQueue中，方便Kafka轻松地获取那些已过期Bucket，并删除它们。如果定时任务的过期时间无法被涵盖在本层时间轮中，那么，就按需创建上一层时间戳，然后在上一层时间轮上完整地执行刚刚所说的所有逻辑。
+
+
+
+
+
+
+
 TheInput:GetWorldEntityUnderMouse():Remove()

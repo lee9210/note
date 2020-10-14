@@ -1,0 +1,30 @@
+PartitionStateMachine分区状态机:
+
+每个分区都必须选举出Leader才能正常提供服务
+
+Kafka为分区定义了4类状态。
+
+NewPartition：分区被创建后被设置成这个状态，表明它是一个全新的分区对象。处于这个状态的分区，被Kafka认为是“未初始化”，因此，不能选举Leader。
+OnlinePartition：分区正式提供服务时所处的状态。
+OfflinePartition：分区下线后所处的状态。
+NonExistentPartition：分区被删除，并且从分区状态机移除后所处的状态。
+
+分区状态转换规则：
+![](./picture/分区状态转换规则.jpg)
+
+分区Leader选举有4类场景。
+OfflinePartitionLeaderElectionStrategy：因为Leader副本下线而引发的分区Leader选举。
+ReassignPartitionLeaderElectionStrategy：因为执行分区副本重分配操作而引发的分区Leader选举。
+PreferredReplicaPartitionLeaderElectionStrategy：因为执行Preferred副本Leader选举而引发的分区Leader选举。
+ControlledShutdownPartitionLeaderElectionStrategy：因为正常关闭Broker而引发的分区Leader选举。
+
+OfflinePartitionLeaderElectionStrategy对应的流程为：
+![](./picture/offlinePartitionLeaderElection流程.jpg)
+
+首先会顺序搜索AR列表，并把第一个同时满足以下两个条件的副本作为新的Leader返回：
+1. 该副本是存活状态，即副本所在的Broker依然在运行中；
+2. 该副本在ISR列表中。
+
+倘若无法找到这样的副本，代码会检查是否开启了Unclean Leader选举：如果开启了，则降低标准，只要满足条件1即可；如果未开启，则本次Leader选举失败，没有新Leader被选出。
+
+选举的策略基本上就是，找出AR列表（或给定副本列表）中首个处于存活状态，且在ISR列表的副本，将其作为新Leader。

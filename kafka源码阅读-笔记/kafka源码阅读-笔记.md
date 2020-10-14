@@ -1206,7 +1206,7 @@ ProducerRequest的在服务端的处理流程是：
 4. ReplicaManager为ProducerRequest生成DelayedProduce对象，并交由delayedProducePurgatory管理
 5. delayedProducePurgatory使用SystemTimer管理DelayedProduce是否超时
 6. ISR集合中的Follower副本发送FetchRequest请求与Leader副本同步消息。同时，也会检查DelayedProduce是否符合执行条件
-7. DelayedProduce执行时会调用回调函数产生ProducerResponse，并将其添加到RequestChannelszhong 
+7. DelayedProduce执行时会调用回调函数产生ProducerResponse，并将其添加到RequestChannels中
 8. 由网络层将ProducerResponse返回给客户端。
 
 ![](./picture/ProducerRequest-DelayedProduce-handle-flow.png)
@@ -1323,6 +1323,7 @@ updateFollowerLogReadResults():当ISR集合中所有follower副本都已经同�
 
 **消息同步**
 follower副本与leader副本同步的功能是由ReplicaFetcherManager组件实现
+AbstractFetcherManager.addFetcherForPartitions()函数
 
 **关闭副本**
 当broker收到来自KafkaController的StopReplicaRequest时，会关闭其指定的副本，并根据StopReplicaRequest中的字段决定是否删除副本对应的Log.在分区副本进行重新分配、关闭Broker等过程中都会使用此请求。
@@ -1345,7 +1346,7 @@ KafkaController通过向集群中的broker发送UpdateMetadataRequest请求来�
 当使用kafka-topics脚本增加某topic的分区数量，由controller管理分区的重新分配；
 当检测到分区的ISR集合发生变化时，由controller通知集群中所有的broker更新其MetadataCache信息
 
-为了实现Controller的高可用，一个broker被选为leader之后，其他的broker都会成为follower，，会从剩下的follower中选出新的follower中选出新的controller leader来管理集群。
+为了实现Controller的高可用，一个broker被选为leader之后，其他的broker都会成为follower，当leader出现故障之后，会从剩下的follower中选出新的follower中选出新的controller leader来管理集群。
 
 选举controller leader依赖于zookeeper实现，每个broker启动时都会创建一个KafkaController对象，但是集群中只能存在一个controller leader来对外提供服务。
 在集群启动时，多个broker上的KafkaController会在指定路径下竞争创建节点，只有第一个成功创建节点的KafkaController才能成为leader，而其余的KafkaController则成为follower
