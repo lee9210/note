@@ -236,6 +236,10 @@ OffsetCommitRequest:提交offset的request
 流程：ConsumerCoordinator.sendOffsetCommitRequest()
 
 
+消费哪个分区是：收到SyncGroupResponse的时候，会把分区信息同步到本地，然后根据分区消费策略range或者轮询策略进行分配
+
+
+
 
 
 

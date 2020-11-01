@@ -1,0 +1,9 @@
+在每一个broker上都会实例化一个GroupCoordinator对象，kafka按照Consumer group的名称将其分配给对应的GroupCoordinator进行管理；
+每个GroupCoordinator只负责管理consumer group的一个子集，而非集群中全部consumer group.
+
+
+功能:
+1. 负责处理JoinGroupRequest和SyncGroupRequest完成consumer group中分区的分配工作；
+2. 通过GroupMetadataManager和内部topic"Offsets Topic"维护offset信息,即使出现消费者宕机，也可以找回之前提交的offset
+3. 记录consumer group的相关信息，即使broker宕机导致consumer group由新的GroupCoordinator进行管理，新GroupCoordinator也可以知道consumer group中每个消费者负责处理哪个分区等信息；
+4. 通过心跳检测消费者的状态
