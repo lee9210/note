@@ -1,0 +1,106 @@
+eureka分为server和client两个服务，server为单独的服务或集群，client需要提供服务端实现。
+
+
+
+server之间通过复制，实现数据同步，全量复制或增量复制。
+client获取数据只能通过拉取server端的数据，来获取。
+
+client在启动之后不会立马注册到server，而是后台线程定时注册。
+当InstanceInfo数据发生变化时，并且eureka.shouldOnDemandUpdateStatusChange=true，会立即向server注册。
+默认40s检查一次信息是否变化，如果变化，则需要重新向server注册，没有则不会
+注册时，server会检查保存的InstanceInfo的lastDirtyTimestamp（更新实例的最后时间戳）属性，以比较大的为保存版本
+
+server接受到注册请求时候，会把注册信息保存在recentlyChangedQueue（租约变更记录队列）用于增量获取。
+server保存一个租约的时间为90s（默认）
+client注册成功之后，有续约机制（心跳），默认30s
+当发起租约失败的情况下，server会返回404，client会重新发起注册。
+
+下线时，server会移除注册的信息，并把该服务设置为delete，添加到recentlyChangedQueue中，用于增量获取。
+
+
+理解Eureka的自我保护模式
+当Eureka Server节点在短时间内丢失过多客户端时（可能发生了网络分区故障），那么这个节点就会进入自我保护模式。
+一旦进入该模式，Eureka Server就会保护服务注册表中的信息，不再删除服务注册表中的数据（也就是不会注销任何微服务）。
+当网络故障恢复后，该Eureka Server节点会自动退出自我保护模式。
+
+期望最大每分钟续租次数:expectedNumberOfRenewsPerMin
+期望最小每分钟续租次数:numberOfRenewsPerMinThreshold
+
+当每分钟心跳次数( renewsLastMin ) 小于 numberOfRenewsPerMinThreshold 时，并且开启自动保护模式开关( eureka.enableSelfPreservation = true ) 时，触发自动保护机制，不再自动过期租约
+
+expectedNumberOfRenewsPerMin = 当前注册的应用实例数 x 2
+numberOfRenewsPerMinThreshold = expectedNumberOfRenewsPerMin * 续租百分比( eureka.renewalPercentThreshold:默认0.85 )
+
+清理过期租约
+server启动时会自动清理过期租约，并会定期清理过期租约，默认60000毫秒
+
+
+client获取注册信息过程：
+Eureka-Client 获取注册信息，分成全量获取和增量获取。默认配置下，Eureka-Client 启动时，首先执行一次全量获取进行本地缓存注册信息，而后每 30 秒增量获取刷新本地缓存( 非“正常”情况下会是全量获取 )。
+
+获取增量注册信息
+
+增量获取注册的应用集合( Applications ) 时，Eureka-Client 会获取到：
+1. Eureka-Server 近期变化( 注册、下线 )的应用集合
+2. Eureka-Server 应用集合一致性哈希码
+
+Eureka-Client 将变化的应用集合和本地缓存的应用集合进行合并后进行计算本地的应用集合一致性哈希码。
+若两个哈希码相等，意味着增量获取成功；若不相等，意味着增量获取失败，Eureka-Client 重新和 Eureka-Server 全量获取应用集合。
+
+应用集合一致性哈希码：appsHashCode = ${status}_${count}_
+例如：appsHashCode = DOWN_2_UP_8_
+
+server集群同步过程
+server本地需要同步的信息会经过三层队列再才会同步到其他server中
+第一层，接收队列( acceptorQueue )，重新处理队列( reprocessQueue )。
+	分发器在收到任务执行请求后，提交到接收队列，任务实际未执行。
+	执行器的工作线程处理任务失败，将符合条件的失败任务提交到重新执行队列。
+	
+第二层，待执行队列( processingOrder )
+	接收线程( Runner )将重新执行队列，接收队列提交到待执行队列。
+
+第三层，工作队列( workQueue )
+	接收线程( Runner )将待执行队列的任务根据参数( maxBatchingSize )将任务合并成批量任务，调度( 提交 )到工作队列。
+	执行器的工作线程池，一个工作线程可以拉取一个批量任务进行执行。
+
+优缺点：
+接收队列，避免处理任务的阻塞等待。
+接收线程( Runner )合并任务，将相同任务编号( 是的，任务是带有编号的 )的任务合并，只执行一次。
+Eureka-Server 为集群同步提供批量操作多个应用实例的接口，一个批量任务可以一次调度接口完成，避免多次调用的开销。当然，这样做的前提是合并任务，这也导致 Eureka-Server 集群之间对应用实例的注册和下线带来更大的延迟。
+
+即server的同步过程是异步进行的，不会立马同步到整个集群。
+
+网络通信整形器
+当任务执行发生请求限流，或是请求网络失败的情况，则延时 AcceptorRunner 将任务提交到工作任务队列，从而避免任务很快去执行，再次发生上述情况。
+
+server地址配置方式有两种
+1. 直接配置实际访问地址：eureka.serviceUrl.defaultZone=http://127.0.0.1:8080/v2
+2. 基于 DNS 解析出访问地址。例如，eureka.shouldUseDns=true 并且 eureka.eurekaServer.domainName=eureka.iocoder.cn
+
+网络通信
+主要两部分的网络通信：
+Eureka-Client 请求 Eureka-Server 的网络通信
+Eureka-Server 集群内，Eureka-Server 请求 其它的Eureka-Server 的网络通信
+
+Eureka-Server 集群不区分主从节点或者 Primary & Secondary 节点，所有节点相同角色(也就是没有角色)，完全对等。
+Eureka-Client 可以向任意 Eureka-Client 发起任意读写操作，Eureka-Server 将操作复制到另外的 Eureka-Server 以达到最终一致性。注意，Eureka-Server 是选择了 AP 的组件。
+
+server在启动时会获取集群的所有节点，并固定时间更新一次集群节点信息（默认10分钟）
+
+Eureka-Server 接收到 Eureka-Client 的 Register、Heartbeat、Cancel、StatusUpdate、DeleteStatusOverride 操作，固定间隔( 默认值 ：500 毫秒，可配 )向 Eureka-Server 集群内其他节点同步( 准实时，非实时 )。
+
+
+限流：使用令牌桶算法
+Eureka-Server 限流过滤器。使用 RateLimiting ，保证 Eureka-Server 稳定性。com.netflix.eureka.RateLimitingFilter
+应用实例状态发生变化时Eureka-Client 向 Eureka-Server 发起注册，同步应用实例信息。使用 RateLimiter ，避免状态频繁发生变化，向 Eureka-Server 频繁同步
+
+
+
+
+
+
+
+
+
+
+
