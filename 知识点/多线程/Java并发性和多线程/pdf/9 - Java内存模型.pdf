@@ -1,0 +1,946 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<!-- saved from url=(0037)http://ifeve.com/java-memory-model-6/ -->
+<html xmlns="http://www.w3.org/1999/xhtml"><head profile="http://gmpg.org/xfn/11"><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<script async="" src="./9 - Java内存模型_files/f.txt"></script>
+<script>
+     (adsbygoogle = window.adsbygoogle || []).push({
+          google_ad_client: "ca-pub-9394337417063147",
+          enable_page_level_ads: true
+     });
+</script>
+<!--<base target="_blank">--><base href="." target="_blank">
+<meta name="baidu_union_verify" content="d30f7acd6a9a378cc0aeb0bd0ddfe30d">
+
+<script async="" src="./9 - Java内存模型_files/f.txt"></script>
+<script>
+  (adsbygoogle = window.adsbygoogle || []).push({
+    google_ad_client: "ca-pub-9394337417063147",
+    enable_page_level_ads: true
+  });
+</script>
+<title>Java内存模型 | 并发编程网 – ifeve.com</title>
+<meta name="description" content="让天下没有难学的技术">
+
+<link rel="alternate" type="application/rss+xml" title="并发编程网 – ifeve.com RSS Feed" href="http://ifeve.com/feed/">
+<link rel="alternate" type="application/atom+xml" title="并发编程网 – ifeve.com Atom Feed" href="http://ifeve.com/feed/atom/"> 
+<link rel="pingback" href="http://ifeve.com/xmlrpc.php">
+
+<link rel="stylesheet" href="./9 - Java内存模型_files/style.css" type="text/css">
+<link rel="stylesheet" href="./9 - Java内存模型_files/comment-style.css" type="text/css">
+
+ 
+<meta name="robots" content="max-image-preview:large">
+<link rel="dns-prefetch" href="http://s.w.org/">
+<link rel="dns-prefetch" href="http://c0.wp.com/">
+<link rel="alternate" type="application/rss+xml" title="并发编程网 - ifeve.com » Java内存模型评论Feed" href="http://ifeve.com/java-memory-model-6/feed/">
+		<script type="text/javascript">
+			window._wpemojiSettings = {"baseUrl":"https:\/\/s.w.org\/images\/core\/emoji\/13.0.1\/72x72\/","ext":".png","svgUrl":"https:\/\/s.w.org\/images\/core\/emoji\/13.0.1\/svg\/","svgExt":".svg","source":{"concatemoji":"http:\/\/ifeve.com\/wp-includes\/js\/wp-emoji-release.min.js?ver=5.7.2"}};
+			!function(e,a,t){var n,r,o,i=a.createElement("canvas"),p=i.getContext&&i.getContext("2d");function s(e,t){var a=String.fromCharCode;p.clearRect(0,0,i.width,i.height),p.fillText(a.apply(this,e),0,0);e=i.toDataURL();return p.clearRect(0,0,i.width,i.height),p.fillText(a.apply(this,t),0,0),e===i.toDataURL()}function c(e){var t=a.createElement("script");t.src=e,t.defer=t.type="text/javascript",a.getElementsByTagName("head")[0].appendChild(t)}for(o=Array("flag","emoji"),t.supports={everything:!0,everythingExceptFlag:!0},r=0;r<o.length;r++)t.supports[o[r]]=function(e){if(!p||!p.fillText)return!1;switch(p.textBaseline="top",p.font="600 32px Arial",e){case"flag":return s([127987,65039,8205,9895,65039],[127987,65039,8203,9895,65039])?!1:!s([55356,56826,55356,56819],[55356,56826,8203,55356,56819])&&!s([55356,57332,56128,56423,56128,56418,56128,56421,56128,56430,56128,56423,56128,56447],[55356,57332,8203,56128,56423,8203,56128,56418,8203,56128,56421,8203,56128,56430,8203,56128,56423,8203,56128,56447]);case"emoji":return!s([55357,56424,8205,55356,57212],[55357,56424,8203,55356,57212])}return!1}(o[r]),t.supports.everything=t.supports.everything&&t.supports[o[r]],"flag"!==o[r]&&(t.supports.everythingExceptFlag=t.supports.everythingExceptFlag&&t.supports[o[r]]);t.supports.everythingExceptFlag=t.supports.everythingExceptFlag&&!t.supports.flag,t.DOMReady=!1,t.readyCallback=function(){t.DOMReady=!0},t.supports.everything||(n=function(){t.readyCallback()},a.addEventListener?(a.addEventListener("DOMContentLoaded",n,!1),e.addEventListener("load",n,!1)):(e.attachEvent("onload",n),a.attachEvent("onreadystatechange",function(){"complete"===a.readyState&&t.readyCallback()})),(n=t.source||{}).concatemoji?c(n.concatemoji):n.wpemoji&&n.twemoji&&(c(n.twemoji),c(n.wpemoji)))}(window,document,window._wpemojiSettings);
+		</script><script src="./9 - Java内存模型_files/wp-emoji-release.min.js.下载" type="text/javascript" defer=""></script>
+		<style type="text/css">
+img.wp-smiley,
+img.emoji {
+	display: inline !important;
+	border: none !important;
+	box-shadow: none !important;
+	height: 1em !important;
+	width: 1em !important;
+	margin: 0 .07em !important;
+	vertical-align: -0.1em !important;
+	background: none !important;
+	padding: 0 !important;
+}
+</style>
+	<link rel="stylesheet" id="wpfp-css" href="./9 - Java内存模型_files/wpfp.css" type="text/css">
+<link rel="stylesheet" id="wp-block-library-css" href="./9 - Java内存模型_files/style.min.css" type="text/css" media="all">
+<style id="wp-block-library-inline-css" type="text/css">
+.has-text-align-justify{text-align:justify;}
+</style>
+<link rel="stylesheet" id="wp-postratings-css" href="./9 - Java内存模型_files/postratings-css.css" type="text/css" media="all">
+<link rel="stylesheet" id="jetpack_css-css" href="./9 - Java内存模型_files/jetpack.css" type="text/css" media="all">
+<script type="text/javascript" src="./9 - Java内存模型_files/jquery.min.js.下载" id="jquery-core-js"></script>
+<script type="text/javascript" src="./9 - Java内存模型_files/jquery-migrate.min.js.下载" id="jquery-migrate-js"></script>
+<script type="text/javascript" src="./9 - Java内存模型_files/script.js.下载" id="wp-favorite-posts-js"></script>
+<link rel="https://api.w.org/" href="http://ifeve.com/wp-json/"><link rel="alternate" type="application/json" href="http://ifeve.com/wp-json/wp/v2/posts/19805"><link rel="EditURI" type="application/rsd+xml" title="RSD" href="http://ifeve.com/xmlrpc.php?rsd">
+<link rel="wlwmanifest" type="application/wlwmanifest+xml" href="http://ifeve.com/wp-includes/wlwmanifest.xml"> 
+<meta name="generator" content="WordPress 5.7.2">
+<link rel="canonical" href="http://ifeve.com/java-memory-model-6/">
+<link rel="shortlink" href="http://ifeve.com/?p=19805">
+<link rel="alternate" type="application/json+oembed" href="http://ifeve.com/wp-json/oembed/1.0/embed?url=http%3A%2F%2Fifeve.com%2Fjava-memory-model-6%2F">
+<link rel="alternate" type="text/xml+oembed" href="http://ifeve.com/wp-json/oembed/1.0/embed?url=http%3A%2F%2Fifeve.com%2Fjava-memory-model-6%2F&amp;format=xml">
+<style type="text/css">img#wpstats{display:none}</style>
+		<link rel="amphtml" href="http://ifeve.com/java-memory-model-6/amp/">
+<script type="text/javascript" src="./9 - Java内存模型_files/jscript.js.下载"></script>
+<script type="text/javascript" src="./9 - Java内存模型_files/comment.js.下载"></script>
+<script type="text/javascript" src="./9 - Java内存模型_files/rollover.js.下载"></script>
+
+<!--[if IE 7]>
+<link rel="stylesheet" href="http://ifeve.com/wp-content/themes/flat/ie7.css" type="text/css" />
+<![endif]-->
+<!--[if IE 8]>
+<link rel="stylesheet" href="http://ifeve.com/wp-content/themes/flat/ie8.css" type="text/css" />
+<![endif]-->
+
+
+<style type="text/css">
+a, .post .title a:hover, .post_meta a:hover, #bread_crumb ul li a:hover, #previous_post a:hover, #next_post a:hover, .post a.more-link:hover, #right_col li a:hover, #copyright li a:hover, #archive_headline #keyword,
+   #comments_wrapper a:hover, #comment_header_right .comment_switch_active a, #comment_header_right .comment_switch_active a:hover, #comment_pager .current
+   { color:#00A19E; }
+
+#no_post a.back:hover, #wp-calendar td a:hover, #wp-calendar #prev a:hover, #wp-calendar #next a:hover, .page_navi a:hover, #submit_comment:hover
+ { background-color:#00A19E; }
+
+#guest_info input:focus, #comment_textarea textarea:focus
+ { border:1px solid #00A19E; }
+
+a:hover
+ { color:#BDC900; }
+
+body { font-size:14px; }
+
+#header { background:url(http://ifeve.com/wp-content/uploads/flat/bg.png) left top; }
+.logo_text a { color:#F5F5F5; }
+#site_description {  border-top:1px solid #BBBBBB; color:#D2D9CC; }
+
+
+</style>
+
+<script type="text/javascript" src="./9 - Java内存模型_files/jquery.min.js(1).下载"></script></head>
+
+<body style="">
+
+ 
+
+ <div id="main_content" class="clearfix">
+
+  <div id="left_col">
+      
+   
+   
+   <div class="post_wrap clearfix" id="single">
+    <div class="post">
+     <h3 class="title"><span>Java内存模型</span></h3>
+     <div class="post_content">
+      <p><a href="http://tutorials.jenkov.com/java-concurrency/java-memory-model.html">原文地址</a>&nbsp; 作者：<a href="http://jakob.jenkov.com/" target="jakob-jenkov">Jakob Jenkov</a>&nbsp;译者：张坤</p>
+<p>Java内存模型规范了Java虚拟机与计算机内存是如何协同工作的。Java虚拟机是一个完整的计算机的一个模型，因此这个模型自然也包含一个内存模型——又称为Java内存模型。<span id="more-19805"></span></p>
+<p>如果你想设计表现良好的并发程序，理解Java内存模型是非常重要的。Java内存模型规定了如何和何时可以看到由其他线程修改过后的共享变量的值，以及在必须时如何同步的访问共享变量。</p>
+<p>原始的Java内存模型存在一些不足，因此Java内存模型在Java1.5时被重新修订。这个版本的Java内存模型在Java8中人在使用。</p>
+<h3 id="java内存模型内部原理">Java内存模型内部原理</h3>
+<p>Java内存模型把Java虚拟机内部划分为线程栈和堆。这张图演示了Java内存模型的逻辑视图。</p>
+<p><img src="./9 - Java内存模型_files/java-memory-model-1.png" alt="Java Memory Model"></p>
+<p>每一个运行在Java虚拟机里的线程都拥有自己的线程栈。这个线程栈包含了这个线程调用的方法当前执行点相关的信息。一个线程仅能访问自己的线程栈。一个线程创建的本地变量对其它线程不可见，仅自己可见。即使两个线程执行同样的代码，这两个线程任然在在自己的线程栈中的代码来创建本地变量。因此，每个线程拥有每个本地变量的独有版本。</p>
+<p>所有原始类型的本地变量都存放在线程栈上，因此对其它线程不可见。一个线程可能向另一个线程传递一个原始类型变量的拷贝，但是它不能共享这个原始类型变量自身。</p>
+<p>堆上包含在Java程序中创建的所有对象，无论是哪一个对象创建的。这包括原始类型的对象版本。如果一个对象被创建然后赋值给一个局部变量，或者用来作为另一个对象的成员变量，这个对象任然是存放在堆上。</p>
+<p>下面这张图演示了调用栈和本地变量存放在线程栈上，对象存放在堆上。</p>
+<p><img src="./9 - Java内存模型_files/java-memory-model-2.png" alt="enter image description here"></p>
+<p>一个本地变量可能是原始类型，在这种情况下，它总是“呆在”线程栈上。</p>
+<p>一个本地变量也可能是指向一个对象的一个引用。在这种情况下，引用（这个本地变量）存放在线程栈上，但是对象本身存放在堆上。</p>
+<p>一个对象可能包含方法，这些方法可能包含本地变量。这些本地变量任然存放在线程栈上，即使这些方法所属的对象存放在堆上。</p>
+<p>一个对象的成员变量可能随着这个对象自身存放在堆上。不管这个成员变量是原始类型还是引用类型。</p>
+<p>静态成员变量跟随着类定义一起也存放在堆上。</p>
+<p>存放在堆上的对象可以被所有持有对这个对象引用的线程访问。当一个线程可以访问一个对象时，它也可以访问这个对象的成员变量。如果两个线程同时调用同一个对象上的同一个方法，它们将会都访问这个对象的成员变量，但是每一个线程都拥有这个本地变量的私有拷贝。</p>
+<p>下图演示了上面提到的点：</p>
+<p><img src="./9 - Java内存模型_files/java-memory-model-3.png" alt="enter image description here"></p>
+<p>两个线程拥有一些列的本地变量。其中一个本地变量（Local Variable 2）执行堆上的一个共享对象（Object 3）。这两个线程分别拥有同一个对象的不同引用。这些引用都是本地变量，因此存放在各自线程的线程栈上。这两个不同的引用指向堆上同一个对象。</p>
+<p>注意，这个共享对象（Object 3）持有Object2和Object4一个引用作为其成员变量（如图中Object3指向Object2和Object4的箭头）。通过在Object3中这些成员变量引用，这两个线程就可以访问Object2和Object4。</p>
+<p>这张图也展示了指向堆上两个不同对象的一个本地变量。在这种情况下，指向两个不同对象的引用不是同一个对象。理论上，两个线程都可以访问Object1和Object5，如果两个线程都拥有两个对象的引用。但是在上图中，每一个线程仅有一个引用指向两个对象其中之一。</p>
+<p>因此，什么类型的Java代码会导致上面的内存图呢？如下所示：</p>
+<pre><code>public class MyRunnable implements Runnable() {
+
+    public void run() {
+        methodOne();
+    }
+
+    public void methodOne() {
+        int localVariable1 = 45;
+
+        MySharedObject localVariable2 =
+            MySharedObject.sharedInstance;
+
+        //... do more with local variables.
+
+        methodTwo();
+    }
+
+    public void methodTwo() {
+        Integer localVariable1 = new Integer(99);
+
+        //... do more with local variable.
+    }
+}
+
+
+public class MySharedObject {
+
+    //static variable pointing to instance of MySharedObject
+
+    public static final MySharedObject sharedInstance =
+        new MySharedObject();
+
+
+    //member variables pointing to two objects on the heap
+
+    public Integer object2 = new Integer(22);
+    public Integer object4 = new Integer(44);
+
+    public long member1 = 12345;
+    public long member1 = 67890;
+}</code></pre>
+<p>如果两个线程同时执行<code>run()</code>方法，就会出现上图所示的情景。<code>run()</code>方法调用<code>methodOne()</code>方法，<code>methodOne()</code>调用<code>methodTwo()</code>方法。</p>
+<p><code>methodOne()</code>声明了一个原始类型的本地变量和一个引用类型的本地变量。</p>
+<p>每个线程执行<code>methodOne()</code>都会在它们对应的线程栈上创建<code>localVariable1</code>和<code>localVariable2</code>的私有拷贝。<code>localVariable1</code>变量彼此完全独立，仅“生活”在每个线程的线程栈上。一个线程看不到另一个线程对它的<code>localVariable1</code>私有拷贝做出的修改。</p>
+<p>每个线程执行<code>methodOne()</code>时也将会创建它们各自的<code>localVariable2</code>拷贝。然而，两个<code>localVariable2</code>的不同拷贝都指向堆上的同一个对象。代码中通过一个静态变量设置<code>localVariable2</code>指向一个对象引用。仅存在一个静态变量的一份拷贝，这份拷贝存放在堆上。因此，<code>localVariable2</code>的两份拷贝都指向由<code>MySharedObject</code>指向的静态变量的同一个实例。<code>MySharedObject</code>实例也存放在堆上。它对应于上图中的Object3。</p>
+<p>注意，<code>MySharedObject</code>类也包含两个成员变量。这些成员变量随着这个对象存放在堆上。这两个成员变量指向另外两个<code>Integer</code>对象。这些<code>Integer</code>对象对应于上图中的Object2和Object4.</p>
+<p>注意，<code>methodTwo()</code>创建一个名为<code>localVariable</code>的本地变量。这个成员变量是一个指向一个<code>Integer</code>对象的对象引用。这个方法设置<code>localVariable1</code>引用指向一个新的<code>Integer</code>实例。在执行<code>methodTwo</code>方法时，<code>localVariable1</code>引用将会在每个线程中存放一份拷贝。这两个<code>Integer</code>对象实例化将会被存储堆上，但是每次执行这个方法时，这个方法都会创建一个新的<code>Integer</code>对象，两个线程执行这个方法将会创建两个不同的<code>Integer</code>实例。<code>methodTwo</code>方法创建的<code>Integer</code>对象对应于上图中的Object1和Object5。</p>
+<p>还有一点，<code>MySharedObject</code>类中的两个<code>long</code>类型的成员变量是原始类型的。因为，这些变量是成员变量，所以它们任然随着该对象存放在堆上，仅有本地变量存放在线程栈上。</p>
+<h3 id="硬件内存架构">硬件内存架构</h3>
+<p>现代硬件内存模型与Java内存模型有一些不同。理解内存模型架构以及Java内存模型如何与它协同工作也是非常重要的。这部分描述了通用的硬件内存架构，下面的部分将会描述Java内存是如何与它“联手”工作的。</p>
+<p>下面是现代计算机硬件架构的简单图示：</p>
+<p><img src="./9 - Java内存模型_files/java-memory-model-4.png" alt="enter image description here"></p>
+<p>一个现代计算机通常由两个或者多个CPU。其中一些CPU还有多核。从这一点可以看出，在一个有两个或者多个CPU的现代计算机上同时运行多个线程是可能的。每个CPU在某一时刻运行一个线程是没有问题的。这意味着，如果你的Java程序是多线程的，在你的Java程序中每个CPU上一个线程可能同时（并发）执行。</p>
+<p>每个CPU都包含一系列的寄存器，它们是CPU内内存的基础。CPU在寄存器上执行操作的速度远大于在主存上执行的速度。这是因为CPU访问寄存器的速度远大于主存。</p>
+<p>每个CPU可能还有一个CPU缓存层。实际上，绝大多数的现代CPU都有一定大小的缓存层。CPU访问缓存层的速度快于访问主存的速度，但通常比访问内部寄存器的速度还要慢一点。一些CPU还有多层缓存，但这些对理解Java内存模型如何和内存交互不是那么重要。只要知道CPU中可以有一个缓存层就可以了。</p>
+<p>一个计算机还包含一个主存。所有的CPU都可以访问主存。主存通常比CPU中的缓存大得多。</p>
+<p>通常情况下，当一个CPU需要读取主存时，它会将主存的部分读到CPU缓存中。它甚至可能将缓存中的部分内容读到它的内部寄存器中，然后在寄存器中执行操作。当CPU需要将结果写回到主存中去时，它会将内部寄存器的值刷新到缓存中，然后在某个时间点将值刷新回主存。</p>
+<p>当CPU需要在缓存层存放一些东西的时候，存放在缓存中的内容通常会被刷新回主存。CPU缓存可以在某一时刻将数据局部写到它的内存中，和在某一时刻局部刷新它的内存。它不会再某一时刻读/写整个缓存。通常，在一个被称作“cache lines”的更小的内存块中缓存被更新。一个或者多个缓存行可能被读到缓存，一个或者多个缓存行可能再被刷新回主存。</p>
+<h3 id="java内存模型和硬件内存架构之间的桥接">Java内存模型和硬件内存架构之间的桥接</h3>
+<p>上面已经提到，Java内存模型与硬件内存架构之间存在差异。硬件内存架构没有区分线程栈和堆。对于硬件，所有的线程栈和堆都分布在主内中。部分线程栈和堆可能有时候会出现在CPU缓存中和CPU内部的寄存器中。如下图所示：</p>
+<p><img src="./9 - Java内存模型_files/java-memory-model-5.png" alt="enter image description here"></p>
+<div id="wmd-preview-section-29447" class="wmd-preview-section preview-content">
+<p>当对象和变量被存放在计算机中各种不同的内存区域中时，就可能会出现一些具体的问题。主要包括如下两个方面：</p>
+<p>-线程对共享变量修改的可见性<br>
+-当读，写和检查共享变量时出现race conditions</p>
+<p>下面我们专门来解释以下这两个问题。</p>
+</div>
+<div id="wmd-preview-section-29448" class="wmd-preview-section preview-content">
+<h4 id="共享对象可见性">共享对象可见性</h4>
+<p>如果两个或者更多的线程在没有正确的使用<code>volatile</code>声明或者同步的情况下共享一个对象，一个线程更新这个共享对象可能对其它线程来说是不接见的。</p>
+<p>想象一下，共享对象被初始化在主存中。跑在CPU上的一个线程将这个共享对象读到CPU缓存中。然后修改了这个对象。只要CPU缓存没有被刷新会主存，对象修改后的版本对跑在其它CPU上的线程都是不可见的。这种方式可能导致每个线程拥有这个共享对象的私有拷贝，每个拷贝停留在不同的CPU缓存中。</p>
+<p>下图示意了这种情形。跑在左边CPU的线程拷贝这个共享对象到它的CPU缓存中，然后将count变量的值修改为2。这个修改对跑在右边CPU上的其它线程是不可见的，因为修改后的count的值还没有被刷新回主存中去。</p>
+<p><img src="./9 - Java内存模型_files/java-memory-model-6.png" alt="enter image description here"></p>
+<p>解决这个问题你可以使用Java中的<code>volatile</code>关键字。<code>volatile</code>关键字可以保证直接从主存中读取一个变量，如果这个变量被修改后，总是会被写回到主存中去。</p>
+<h4 id="race-conditions">Race Conditions</h4>
+<p>如果两个或者更多的线程共享一个对象，多个线程在这个共享对象上更新变量，就有可能发生<a href="http://tutorials.jenkov.com/java-concurrency/race-conditions-and-critical-sections.html">race conditions</a>。</p>
+<p>想象一下，如果线程A读一个共享对象的变量count到它的CPU缓存中。再想象一下，线程B也做了同样的事情，但是往一个不同的CPU缓存中。现在线程A将<code>count</code>加1，线程B也做了同样的事情。现在<code>count</code>已经被增在了两个，每个CPU缓存中一次。</p>
+<p>如果这些增加操作被顺序的执行，变量<code>count</code>应该被增加两次，然后原值+2被写回到主存中去。</p>
+<p>然而，两次增加都是在没有适当的同步下并发执行的。无论是线程A还是线程B将<code>count</code>修改后的版本写回到主存中取，修改后的值仅会被原值大1，尽管增加了两次。</p>
+<p>下图演示了上面描述的情况：</p>
+<p><img src="./9 - Java内存模型_files/java-memory-model-7.png" alt="enter image description here"></p>
+<p>解决这个问题可以使用<a href="http://tutorials.jenkov.com/java-concurrency/synchronized.html">Java同步块</a>。一个同步块可以保证在同一时刻仅有一个线程可以进入代码的临界区。同步块还可以保证代码块中所有被访问的变量将会从主存中读入，当线程退出同步代码块时，所有被更新的变量都会被刷新回主存中去，不管这个变量是否被声明为volatile。</p>
+</div>
+
+
+
+           </div><!-- END .post_content -->
+    </div>
+    
+   </div><!-- END .post_wrap -->
+
+   
+      <div id="comments_wrapper">
+    
+
+
+
+
+<!-- END #comment_header -->
+
+<div id="comments">
+
+ <div id="comment_area">
+  <!-- start commnet -->
+  <ol class="commentlist">
+	
+ <li class="comment guest-comment even_comment" id="comment-26219">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-26219">
+
+木秀林
+</span>
+     </li>
+     <li class="comment-date">2015/06/12 1:42下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26219">
+    <p>并发网总是翻译些不痛不痒的内容，这样下去就把并发网的逼格减低了。<br>
+jvm内存模型这样的内容不知道炒了多少次，能不能统一起来？<br>
+否则今天这个人挖个坑，明天那个人挖个坑，最终谁也不能真正的挖到一口井，最终大家都没有喝到井水。</p>
+  </div>
+
+<ul class="children">
+
+ <li class="comment admin-comment even_comment_children" id="comment-26221">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-26221">
+
+BlankKelly
+</span>
+     </li>
+     <li class="comment-date">2015/06/12 8:20下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26221">
+    <p>只是想把这个系列http://ifeve.com/java-concurrency-thread-directory/补充完整。</p>
+  </div>
+
+<ul class="children">
+
+ <li class="comment guest-comment odd_comment_children" id="comment-26223">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<a id="commentauthor-26223" class="url guest-url" href="http://weibo.com/kirals" rel="external nofollow">
+
+方 腾飞
+</a>
+     </li>
+     <li class="comment-date">2015/06/12 9:04下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26223">
+    <p>我觉得没有问题，支持你！</p>
+  </div>
+
+</li><!-- #comment-## -->
+</ul><!-- .children -->
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment even_comment_children" id="comment-26222">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<a id="commentauthor-26222" class="url guest-url" href="http://weibo.com/kirals" rel="external nofollow">
+
+方 腾飞
+</a>
+     </li>
+     <li class="comment-date">2015/06/12 9:03下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26222">
+    <p>后续会和JUG合作翻译Java官方文章，另外还计划翻译各技术官网的技术手册</p>
+  </div>
+
+<ul class="children">
+
+ <li class="comment guest-comment odd_comment_children" id="comment-26224">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-26224">
+
+木秀林
+</span>
+     </li>
+     <li class="comment-date">2015/06/15 9:34上午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26224">
+    <p>“翻译各技术官网的技术手册”这个计划不错，表示大力支持。最近在研究freemarker，发现有个金丝燕网，那里的freemarker研究可以说是网络上最全面的，据说后期还会推出源码分析，可以考虑一下和金丝燕的合作。</p>
+  </div>
+
+</li><!-- #comment-## -->
+</ul><!-- .children -->
+</li><!-- #comment-## -->
+</ul><!-- .children -->
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment odd_comment" id="comment-26230">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-26230">
+
+liuxinglanyue
+</span>
+     </li>
+     <li class="comment-date">2015/06/17 3:24下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26230">
+    <p>“在你的Java程序中每个CPU上一个线程可能同时（并发）执行”</p>
+<p>这里是不是说成 并行执行 好些。</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment even_comment" id="comment-26314">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-26314">
+
+鱼丸
+</span>
+     </li>
+     <li class="comment-date">2015/08/10 5:05下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26314">
+    <p>“理论上，两个线程都可以访问Object1和Object5，如果两个线程都拥有两个对象的引用”这句话翻译语序是不是可以改改</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment odd_comment" id="comment-26413">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-26413">
+
+dzt
+</span>
+     </li>
+     <li class="comment-date">2015/10/15 9:29上午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26413">
+    <p>volatile讲得简单了，能再细点就好了!</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment even_comment" id="comment-26421">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-26421">
+
+BlackLee
+</span>
+     </li>
+     <li class="comment-date">2015/10/16 4:56下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26421">
+    <p>volatile 只能保证每次读取都是从主存中取的，并不能保证是最新的。每个线程从主存取值，修改，写回不是原子性的。<br>
+T1取值，T1加一，T2取值，T1写回，T2加一，T2写回。最后还是只加一。<br>
+要解决同步问题还是得上锁，或者同步代码。<br>
+单个的volatile并不能保证同步。</p>
+  </div>
+
+<ul class="children">
+
+ <li class="comment guest-comment even_comment_children" id="comment-26674">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-26674">
+
+javajack
+</span>
+     </li>
+     <li class="comment-date">2016/02/16 5:51下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26674">
+    <p>用volatile的话，一般情况下只有一个线程进行写操作。</p>
+  </div>
+
+</li><!-- #comment-## -->
+</ul><!-- .children -->
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment odd_comment" id="comment-26675">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-26675">
+
+javajack
+</span>
+     </li>
+     <li class="comment-date">2016/02/16 5:52下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26675">
+    <p>看了之后有些许受益，能像一楼所说的那样，就更完美了~</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment even_comment" id="comment-26863">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-26863">
+
+Tod
+</span>
+     </li>
+     <li class="comment-date">2016/04/24 5:49下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26863">
+    <p>谢谢分享。<br>
+有几个问题：<br>
+1、我提供的RPC服务中，一个方法里都会new一个对象，这个对象就是放在线程栈里的吧？<br>
+2、如果RPC框架会为每一个调用创建一个线程来执行请求，那么这个类型的对象在是线程隔离的，每一次调用就会new一个对象。如果RPC框架用的是线程池，对象肯定还是线程隔离，但是还会每一次调用都new一个对象吗？<br>
+3、如果在声明一个ThreadLocal，将这个对象set到ThreadLocal里，会减少性能开销吗？</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment odd_comment" id="comment-26953">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-26953">
+
+走召礻申了
+</span>
+     </li>
+     <li class="comment-date">2016/06/01 8:46下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-26953">
+    <p>Race Conditions是不是也可以利用volatile解决？</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment even_comment" id="comment-27005">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-27005">
+
+listenchina
+</span>
+     </li>
+     <li class="comment-date">2016/06/30 9:11上午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-27005">
+    <p>当一个线程可以访问一个对象时，它也可以访问这个对象的成员变量。如果两个线程同时调用同一个对象上的同一个方法，它们将会都访问这个对象的成员变量，但是每一个线程都拥有这个本地变量的私有拷贝。<br>
+————————<br>
+每一个线程都拥有这个本地变量的私有拷贝？“这个本地变量”是指哪个？对象的成员变量？</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment odd_comment" id="comment-27006">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-27006">
+
+listenchina
+</span>
+     </li>
+     <li class="comment-date">2016/06/30 9:29上午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-27006">
+    <blockquote cite="./9 - Java内存模型_files/saved_resource"><p>
+<a href="http://ifeve.com/java-memory-model-6/#comment-27005" rel="nofollow">listenchina</a> :<br>
+    当一个线程可以访问一个对象时，它也可以访问这个对象的成员变量。如果两个线程同时调用同一个对象上的同一个方法，它们将会都访问这个对象的成员变量，但是每一个线程都拥有这个本地变量的私有拷贝。<br>
+————————<br>
+每一个线程都拥有这个本地变量的私有拷贝？“这个本地变量”是指哪个？对象的成员变量？
+  </p></blockquote>
+<p>哦，“这个本地变量”说的是这个对象的成员变量的引用？</p>
+  </div>
+
+<ul class="children">
+
+ <li class="comment guest-comment odd_comment_children" id="comment-27009">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-27009">
+
+zhijian
+</span>
+     </li>
+     <li class="comment-date">2016/07/02 11:22下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-27009">
+    <p>应该是“如果两个线程同时调用同一个对象上的同一个方法”中调用方法的本地变量。</p>
+  </div>
+
+</li><!-- #comment-## -->
+</ul><!-- .children -->
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment even_comment" id="comment-27070">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<a id="commentauthor-27070" class="url guest-url" href="http://http://largebear.net" rel="external nofollow">
+
+程式猎人
+</a>
+     </li>
+     <li class="comment-date">2016/08/13 10:18下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-27070">
+    <p>写的还可以，挺清晰的，非常感谢</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment odd_comment" id="comment-27263">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-27263">
+
+Jintao_Ma
+</span>
+     </li>
+     <li class="comment-date">2016/11/15 3:20下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-27263">
+    <p>“存放在堆上的对象可以被所有持有对这个对象引用的线程访问。当一个线程可以访问一个对象时，它也可以访问这个对象的成员变量。如果两个线程同时调用同一个对象上的同一个方法，它们将会都访问这个对象的成员变量，但是每一个线程都拥有这个本地变量的私有拷贝。”  这段话最后一句不对，每个线程都会修改这个对象的成员变量，而不是拥有一份拷贝，就像前文说的，对象的成员变量也是存放在堆中的。</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment even_comment" id="comment-27264">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<a id="commentauthor-27264" class="url guest-url" href="http://blog.csdn.net/jintao_ma" rel="external nofollow">
+
+Jintao_Ma
+</a>
+     </li>
+     <li class="comment-date">2016/11/15 3:32下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-27264">
+    <blockquote cite="./9 - Java内存模型_files/saved_resource(1)"><p>
+<a href="http://ifeve.com/java-memory-model-6/#comment-27263" rel="nofollow">Jintao_Ma</a> :<br>
+    “存放在堆上的对象可以被所有持有对这个对象引用的线程访问。当一个线程可以访问一个对象时，它也可以访问这个对象的成员变量。如果两个线程同时调用同一个对象上的同一个方法，它们将会都访问这个对象的成员变量，但是每一个线程都拥有这个本地变量的私有拷贝。”  这段话最后一句不对，每个线程都会修改这个对象的成员变量，而不是拥有一份拷贝，就像前文说的，对象的成员变量也是存放在堆中的。
+  </p></blockquote>
+<p>或者改为”但是每一个线程都拥有指向这个对象的引用”</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment odd_comment" id="comment-27444">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-27444">
+
+cenyol
+</span>
+     </li>
+     <li class="comment-date">2017/02/26 3:41下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-27444">
+    <p>感觉“原始类型”翻译为“基本类型”会更好</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment even_comment" id="comment-27469">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-27469">
+
+sttddy
+</span>
+     </li>
+     <li class="comment-date">2017/03/08 2:46下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-27469">
+    <p>“这个版本的Java内存模型在Java8中人在使用。” 人在使用 应为 仍在使用；<br>
+“这个线程栈包含了这个线程调用的方法当前执行点相关的信息”,应翻译为”线程栈包含有关线程调用以到达当前执行点的方法的信息”</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment odd_comment" id="comment-27470">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-27470">
+
+sttddy
+</span>
+     </li>
+     <li class="comment-date">2017/03/08 2:48下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-27470">
+    <p>原文中有大量的“A thread”不应该翻译成“一个线程”，直接翻译成“线程”更好些</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment even_comment" id="comment-28162">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-28162">
+
+zhanwangls
+</span>
+     </li>
+     <li class="comment-date">2018/02/25 11:38下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-28162">
+    <p>方法区为什么没有提</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment odd_comment" id="comment-28716">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-28716">
+
+Angzk3488
+</span>
+     </li>
+     <li class="comment-date">2019/05/28 3:50下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-28716">
+    <p>这两个线程任然在在自己的线程栈中的代码来创建本地变量。</p>
+<p>仍然 任然。</p>
+  </div>
+
+</li><!-- #comment-## -->
+
+ <li class="comment guest-comment even_comment" id="comment-29102">
+  <div class="comment-meta">
+   <div class="comment-meta-left">
+    
+    <ul class="comment-name-date">
+     <li class="comment-name">
+<span id="commentauthor-29102">
+
+erlking
+</span>
+     </li>
+     <li class="comment-date">2020/12/04 4:03下午</li>
+    </ul>
+   </div>
+
+   
+
+  </div>
+  <div class="comment-content" id="comment-content-29102">
+    <p>原始的Java内存模型存在一些不足，因此Java内存模型在Java1.5时被重新修订。这个版本的Java内存模型在Java8中人在使用。<br>
+这句话是应该是有个错别字吧 ， “Java8中人在使用” , “Java8中仍在使用”</p>
+  </div>
+
+</li><!-- #comment-## -->
+  </ol>
+  <!-- comments END -->
+
+  
+ </div><!-- #comment-list END -->
+
+
+ <div id="trackback_area">
+ <!-- start trackback -->
+  <!-- trackback end -->
+ </div><!-- #trackbacklist END -->
+
+ 
+
+
+ 
+ 
+
+ </div><!-- #comment end -->   </div>
+   
+      
+   
+
+  </div><!-- END #left_col -->
+
+  
+
+    
+  
+  
+
+	
+ </div><!-- END #main_content -->
+
+  <p id="return_top" style="display: none;"><a href="http://ifeve.com/java-memory-model-6/#header">return top</a></p>
+ 
+<link rel="stylesheet" id="yarppRelatedCss-css" href="./9 - Java内存模型_files/related.css" type="text/css" media="all">
+<script type="text/javascript" src="./9 - Java内存模型_files/comment-reply.min.js.下载" id="comment-reply-js"></script>
+<script type="text/javascript" id="wp-postratings-js-extra">
+/* <![CDATA[ */
+var ratingsL10n = {"plugin_url":"http:\/\/ifeve.com\/wp-content\/plugins\/wp-postratings","ajax_url":"http:\/\/ifeve.com\/wp-admin\/admin-ajax.php","text_wait":"Please rate only 1 item at a time.","image":"stars_crystal","image_ext":"gif","max":"5","show_loading":"1","show_fading":"1","custom":"0"};
+var ratings_mouseover_image=new Image();ratings_mouseover_image.src="http://ifeve.com/wp-content/plugins/wp-postratings/images/stars_crystal/rating_over.gif";;
+/* ]]> */
+</script>
+<script type="text/javascript" src="./9 - Java内存模型_files/postratings-js.js.下载" id="wp-postratings-js"></script>
+<script type="text/javascript" src="./9 - Java内存模型_files/wp-embed.min.js.下载" id="wp-embed-js"></script>
+<script src="./9 - Java内存模型_files/e-202122.js.下载" defer=""></script>
+<script>
+	_stq = window._stq || [];
+	_stq.push([ 'view', {v:'ext',j:'1:9.8',blog:'129860238',post:'19805',tz:'8',srv:'ifeve.com'} ]);
+	_stq.push([ 'clickTrackerInit', '129860238', '19805' ]);
+</script>
+
+
+<!-- 
+<script src="http://ajax.useso.com/ajax/libs/jquery/1.9.0/jquery.min.js"></script> -->
+
+<!-- <script src="http://coolshell.cn//wp-content/themes/inove/js/jquery.bpopup-0.8.0.min.js"></script>
+ --><img src="./9 - Java内存模型_files/g.gif" alt=":)" width="6" height="5" id="wpstats"><style>#left_col {margin:0;}.post .title { background:no-repeat left 45px;}.post_content {margin:0;}#comments {margin:0;padding:0;}.comment {color: #000;}body {color: #000;}.post {width:100%;}#comments_wrapper {width: 100%;}</style></body></html>

@@ -1,0 +1,48 @@
+var fileref=document.createElement('script');
+fileref.setAttribute("type","text/javascript");
+fileref.setAttribute("src", 'https://cdn.staticfile.org/jquery/1.10.2/jquery.min.js');
+document.getElementsByTagName("head")[0].appendChild(fileref);
+
+
+setTimeout(function(){ 
+	$(".meta").remove();
+	$("#header").remove();
+	$("#bread_crumb>.clearfix").remove();
+	var d = $(".post_content").children();
+	var length = d.length;
+	$(d[length - 1]).remove();
+	$(d[length - 2]).remove();
+	$(d[length - 3]).remove();
+	$(d[length - 4]).remove();
+
+	$("#comment_header").remove();
+	$("#respond").remove();
+	$("#previous_next_post_single").remove();
+	$("#right_col").remove();
+	$(".comment-act").remove();
+	$("#footer").remove();
+	$("#container").remove();
+	$("#bread_crumb").remove();
+	var html = '<style>#left_col {margin:0;}.post .title { background:no-repeat left 45px;}.post_content {margin:0;}#comments {margin:0;padding:0;}.comment {color: #000;}body {color: #000;}.post {width:100%;}#comments_wrapper {width: 100%;}</style>'
+	var $html = $(html)
+	$("body").append($html);
+
+}, 1000);
+
+
+
+13 - Thread Signaling （未翻译）
+
+
+
+
+
+
+
+
+
+
+
+
+
+
