@@ -31,10 +31,6 @@ setTimeout(function(){
 
 
 
-13 - Thread Signaling （未翻译）
-
-
-
 
 
 
