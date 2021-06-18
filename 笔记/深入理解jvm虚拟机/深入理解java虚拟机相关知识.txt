@@ -80,5 +80,9 @@ public void testAddOperation();
 运行时栈帧结构
 栈帧（Stack Frame） 是用于虚拟机执行时方法调用和方法执行时的数据结构，它是虚拟栈数据区的组成元素。每一个方法从调用到方法返回都对应着一个栈帧入栈出栈的过程。
 
+try-catch-finally异常处理
+1. 如果try语句块中出现属于Exception或其子类的异常，转到catch语句块处理
+2. 如果try语句块中出现不属于Exception或其子类的异常，转到finally语句块处理
+3. 如果catch语句块中出现任何异常，转到finally语句块处理
 
 // todo  读屏障和写屏障
