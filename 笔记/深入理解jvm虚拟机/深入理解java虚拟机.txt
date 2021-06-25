@@ -611,11 +611,109 @@ ZGC使用读屏障来实现清理过程中对象的定位。染色指针技术�
 	恢复上层方法的局部变量表和操作数栈，把返回值(如果有)压入调用者栈帧的操作数栈中，调整PC计数器的值以指向方法调用指令后面的一条指令。
 	
 8.3 方法调用	
+	确定调用方法的版本(即调用哪一个方法)。
+
+8.3.1 解析
+	所有方法调用的目标方法在Class文件里面都是一个常量池中的符号引用，在类加载的解析阶段，会将其中的一部分符号引用转化为直接引用。
+	这种歇息能够成立的前提是：方法在程序真正运行之前就有一个可确定的调用版本，并且这个方法的调用版本在运行期是不可改变的。
+	即调用目标在程序代码写好、编译器进行编译那一刻就已经确定下来。
+	符合"编译期可知，运行期不可"这个要求的方法啊，主要有静态方法和私有方法两种。因此他们都适合在类加载阶段进行解析。
+	
+	解析调用是一个静态过程，在编译期就完全确定，在类加载的解析阶段就会把涉及的符号引用全部转变为明确的直接引用，不必延迟到运行期去完成。
+
+8.3.2 分派
+	多态的提现。
+	
+1. 静态分派
+	
+````
+	Human man = new Man();
+````
+	静态类型：Human
+	实际类型：Man
+	
+	**虚拟机在重载时是通过参数的静态类型而不是实际类型作为判定依据**
+	
+	所有依赖静态类型来决定方法执行版本的分派动作，都称为静态分派。最典型的就是重载。根据传入参数不同，选择不同的函数名相同的函数。静态分派发生在编译阶段。
+
+2. 动态分派
+	重写
+	
+3. 单分派与多分派
+	单分派是根据一个宗量对目标方法进行选择，多分派是根据多于一个宗量对目标方法进行选择
+
+````
+public class Dispatcher {
+    static class QQ{}
+    static class _360{}
+    public static class Father{
+        public void hardChoice(QQ qq){
+            System.out.println("father choose qq");
+        }
+        public void hardChoice(_360 _360){
+            System.out.println("father choose 360");
+        }
+    }
+    public static class Son extends Father{
+        @Override
+        public void hardChoice(QQ qq){
+            System.out.println("son choose qq");
+        }
+        @Override
+        public void hardChoice(_360 _360){
+            System.out.println("son choose 360");
+        }
+    }
+    public static void main(String[] args) {
+        Father father = new Father();
+        Father son = new Son();
+        father.hardChoice(new _360());
+        son.hardChoice(new QQ());
+    }
+}
+----
+father choose 360
+son choose qq
+````
+	基于一个宗量来选择适合的方法。
+	
+4. 虚拟机动态分派的实现
+	图示：方法表结构.png
+	
+	虚拟机方法表中存放着各个方法的实际入口地址。如果某个方法在子类中没有被重写，那子类的虚方法表中的地址入款和父类相同方法的地址入口是一致的，都指向
+	父类的实现入口。如果子类中重写了这个方法，子类虚方法表中的地址也会被替换为指向子类实现版本的入口地址。
+	
+8.4 动态类型语言支持
+	
+	java.lang.invoke包的支持
+	
+8.5 基于栈的字节码解释执行引擎
+	// todo
+	
+	
+	450
+	
+9 实战 // todo 
+
+10 前端编译与代码优化
+	前端编译器：JDK的Javac、Eclipse JDT中的增量式编译器(ECJ)
+	即时编译器：HotSpot虚拟机的C1、C2编译器、Graal编译器
+	提前编译器：JDK的Jaotc、GNU Compiler for the Java(GCJ)、Excelsior JET
+	
+	主要是指第一类编译器
+	
+10.2.1 javac的源码与调试
+	
+	// todo
+	
+12 java内存模型与线程
 	
 	
 	
 	
-373
+	
+	
+596
 
 
 
