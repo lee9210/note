@@ -86,3 +86,36 @@ try-catch-finally异常处理
 3. 如果catch语句块中出现任何异常，转到finally语句块处理
 
 // todo  读屏障和写屏障
+
+
+
+有栈协程与无栈协程：https://blog.csdn.net/weixin_43705457/article/details/106924435
+
+
+synchronized关键字同步过程：
+synchronized经过javac编译后，会在同步块的前后分别形成monitorenter和monitorexit这两个字节码指令。
+这两个字节码都需要一个reference类型的参数来指明要锁定和解锁的对象。如果源码中的synchronized明确指定了对象参数，那就以这个对象的引用作为reference;如果没有明确指定，那将根据synchronized修饰的方法类型(如实例方法或类方法)，来决定是取代码所在的对象实例还是去类型对应的Class对象来作为线程要持有的锁
+
+在执行monitorenter指令时，首先要去尝试获取对象的锁。如果这个对象没有被锁定，或者当前线程已经持有那个对象的锁，就把锁的计数器值增加1，
+而在执行monitorexit指令会将锁计数器的值减1。一旦计数器的值为0，锁随即就释放了。如果获取对象锁失败，那当前线程就应当被阻塞等待，直到请求锁定的对象被持有它的线程释放为止
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
